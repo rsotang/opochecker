@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -211,6 +211,27 @@ def parse_bopa(body: str) -> list:
             continue
         seen.add(url)
         out.append(Announcement(title, url))
+    return out
+
+
+def extract_links(base: str, body: str, link_re: str, max_links: int = 400) -> list:
+    """Extrae anuncios de un HTML: enlaces cuyo href casa con link_re, con su texto."""
+    out = []
+    seen = set()
+    for href, txt in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', body, re.S | re.I):
+        url = abs_url(base, href)
+        title = strip_tags(txt)
+        if link_re and not re.search(link_re, url, re.I):
+            continue
+        if not title:
+            continue
+        key = url or title
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(Announcement(title, url))
+        if len(out) >= max_links:
+            break
     return out
 
 
@@ -406,7 +427,189 @@ def run_check(cfg: dict, verbose: bool = False) -> int:
             ok_all = False
 
     save_state(state)
+    process_commands(cfg)
     return 0 if ok_all else 1
+
+
+# ------------------------------------------------------------ retroceso
+
+MESES = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+         "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11,
+         "diciembre": 12}
+
+
+def fmt_bt(url_tpl: str, day: date) -> str:
+    return url_tpl.format(fecha=day.strftime("%d/%m/%Y"),
+                          fecha_diaria=day.strftime("%Y%m%d"),
+                          fecha_url=urllib.parse.quote(day.strftime("%d/%m/%Y")))
+
+
+def bt_fetch_day(src: dict, day: date) -> list:
+    """Fuentes con URL por dia (bocyl, doe, bopa...)."""
+    items = PARSERS[src["type"]](http_get(fmt_bt(src["url"], day)))
+    for extra in src.get("extra_urls", []):
+        items.extend(PARSERS[src["type"]](http_get(fmt_bt(extra, day))))
+    return items
+
+
+def bt_walk_bon(limit: date) -> list:
+    """Navarra: indice de boletines (numero | fecha) -> sumario con anuncios."""
+    body = http_get("https://bon.navarra.es/es/indice-boletines")
+    out = []
+    for href, dia, mes, ano in re.findall(
+            r'<a\s+href="(https://bon\.navarra\.es/es/boletin/-/sumario/\d+/\d+)"'
+            r'[^>]*?title="N[º\u00ba]?\s*\d+\s*\|\s*(\d{1,2}) de (\w+) de (\d{4})"', body):
+        d = date(int(ano), MESES[mes.lower()], int(dia))
+        if d < limit:
+            continue
+        page = http_get(href)
+        for a in extract_links(href, page, r"bon\.navarra\.es/es/anuncio/"):
+            out.append(a)
+    return out
+
+
+def bt_walk_canarias(limit: date) -> list:
+    """Canarias: archivo anual (numero | fecha ISO en title) -> boletin del numero."""
+    body = http_get("https://www.gobiernodecanarias.org/boc/archivo/2026/")
+    out = []
+    for href, iso in re.findall(
+            r'<a\s+href="(/boc/\d{4}/\d+/index\.html)"[^>]*?title="[^"]*\((\d{4}-\d{2}-\d{2})\)"', body):
+        d = datetime.strptime(iso, "%Y-%m-%d").date()
+        if d < limit:
+            continue
+        page = http_get(abs_url("https://www.gobiernodecanarias.org", href))
+        out.extend(parse_canarias(page))
+    return out
+
+
+def bt_collect(cfg: dict, days: int) -> list:
+    """Recoge de las fuentes con historico los anuncios de los ultimos `days` dias."""
+    limit = date.today() - timedelta(days=days)
+    keywords = cfg.get("keywords", [["facultativo", "especialista"]])
+    seen = load_state().setdefault("seen", {})
+    found = []
+
+    for src in cfg.get("backtrack", []):
+        name = f"{src.get('ccaa')} ({src.get('boletin')})"
+        dmax = min(src.get("days", days), days)
+        try:
+            anns = []
+            stype = src.get("type")
+            if stype == "bon_walk":
+                anns = bt_walk_bon(date.today() - timedelta(days=dmax))
+            elif stype == "canarias_walk":
+                anns = bt_walk_canarias(date.today() - timedelta(days=dmax))
+            else:
+                day = date.today() - timedelta(days=dmax)
+                while day <= date.today():
+                    try:
+                        anns.extend(bt_fetch_day(src, day))
+                    except Exception:
+                        pass  # dias sin boletin (fin de semana, festivo)
+                    day += timedelta(days=1)
+            for a in anns:
+                if not a.title:
+                    continue
+                if not is_match(a.title, a.url, keywords):
+                    continue
+                if a.key in seen:
+                    continue
+                a.source = src
+                found.append(a)
+            log.info("Retroceso %s: %d anuncios, %d coinciden", name, len(anns),
+                     sum(1 for a in anns if is_match(a.title, a.url, keywords)))
+        except Exception as e:
+            log.error("Retroceso %s: ERROR -> %s", name, e)
+    return found
+
+
+def bt_send(cfg: dict, items: list, days: int, send_to: str = None) -> int:
+    """Envia los resultados del retroceso agrupados por CCAA y los marca como vistos."""
+    state = load_state()
+    seen = state.setdefault("seen", {})
+    token = cfg["_token"]
+    chat = send_to or cfg["_chat"]
+    by_src = {}
+    for a in items:
+        by_src.setdefault((a.source.get("ccaa"), a.source.get("boletin")), []).append(a)
+
+    sent = 0
+    for (ccaa, boletin), anns in by_src.items():
+        chunks = [anns[i:i + 12] for i in range(0, len(anns), 12)]
+        for ci, chunk in enumerate(chunks, 1):
+            lines = [f"<b>Retroceso {days} dias: {esc(ccaa)} ({esc(boletin)})</b>"]
+            if len(chunks) > 1:
+                lines[0] += f"  [{ci}/{len(chunks)}]"
+            for i, a in enumerate(chunk, 1):
+                lines.append(f"{i}. {esc(a.title)}\n   <a href=\"{html.escape(a.url, quote=True)}\">ver documento</a>")
+            if telegram_send(token, chat, "\n".join(lines)):
+                for a in chunk:
+                    seen[a.key] = datetime.now().isoformat(timespec="seconds")
+                sent += len(chunk)
+    if not items:
+        telegram_send(token, chat,
+                      f"<b>Retroceso {days} dias</b>: no se encontraron anuncios de facultativos "
+                      f"especialistas en los boletines con historico disponible.")
+    save_state(state)
+    return sent
+
+
+def run_backtrack(cfg: dict, days: int = 30, dry_run: bool = False,
+                  send_to: str = None) -> list:
+    items = bt_collect(cfg, days)
+    if dry_run:
+        return items
+    bt_send(cfg, items, days, send_to)
+    return items
+
+
+def process_commands(cfg: dict):
+    """Procesa comandos pendientes del bot (getUpdates). Se ejecuta en cada --check."""
+    token = cfg["_token"]
+    if not token:
+        return
+    ok, err = telegram_api("getUpdates", token, {"timeout": 0})
+    if not ok:
+        return
+    updates = ok.get("result", [])
+    if not updates:
+        return
+    max_id = 0
+    for upd in updates:
+        max_id = max(max_id, upd.get("update_id", 0))
+        msg = upd.get("message") or {}
+        text = (msg.get("text") or "").strip()
+        chat_id = (msg.get("chat") or {}).get("id")
+        if not text or chat_id is None:
+            continue
+        cmd, _, arg = text.partition(" ")
+        cmd = cmd.lower()
+        log.info("Comando recibido: %s (chat %s)", cmd, chat_id)
+        if cmd == "/backtrack":
+            try:
+                days = min(max(int(arg.strip()), 1), 60)
+            except ValueError:
+                days = 30
+            telegram_send(token, chat_id,
+                          f"Revisando los ultimos <b>{days} dias</b> de boletines "
+                          f"(tarda unos minutos)...")
+            items = run_backtrack(cfg, days, send_to=chat_id)
+            log.info("/backtrack: %d coincidencias enviadas", len(items))
+        elif cmd == "/status":
+            n = len([s for s in cfg.get("sources", []) if s.get("enabled", True)])
+            telegram_send(token, chat_id,
+                          f"<b>Opochecker</b> activo.\n"
+                          f"Fuentes activas: {n}\n"
+                          f"Comandos: /backtrack [dias], /status, /ayuda")
+        elif cmd in ("/ayuda", "/help", "/start"):
+            telegram_send(token, chat_id,
+                          "<b>Opochecker</b> - avisos de oposiciones de facultativos especialistas.\n\n"
+                          "/backtrack [dias] - revisa los ultimos dias (30 por defecto) por si se "
+                          "escapo algo antes de activar el bot\n"
+                          "/status - estado del vigilante\n"
+                          "/ayuda - esta ayuda")
+    if max_id:
+        telegram_api("getUpdates", token, {"offset": max_id + 1})
 
 
 # ----------------------------------------------------------- CLI
@@ -416,6 +619,11 @@ def main():
     ap.add_argument("--verify", action="store_true", help="probar fuentes sin enviar Telegram")
     ap.add_argument("--test", action="store_true", help="enviar mensaje de prueba a Telegram")
     ap.add_argument("--check", action="store_true", help="ejecutar comprobacion y notificar novedades")
+    ap.add_argument("--backtrack", action="store_true",
+                    help="revisar los ultimos N dias de boletines por anuncios no notificados")
+    ap.add_argument("--days", type=int, default=30, help="dias a revisar en --backtrack (defecto 30)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="con --backtrack: mostrar resultados sin enviarlos por Telegram")
     ap.add_argument("--loop", action="store_true", help="bucle continuo")
     ap.add_argument("--interval", type=int, default=30, help="minutos entre comprobaciones (defecto 30)")
     ap.add_argument("--install-schedule", action="store_true", help="crear tarea cada 30 min (Programador)")
@@ -509,6 +717,13 @@ def main():
     if args.test:
         print(telegram_test(cfg["_token"], cfg["_chat"]))
         sys.exit(0)
+
+    if args.backtrack:
+        items = run_backtrack(cfg, args.days, dry_run=args.dry_run)
+        print(f"\nRetroceso de {args.days} dias: {len(items)} coincidencias")
+        for a in items[:80]:
+            print(f"  - [{a.source.get('ccaa')}] {a.title[:90]}\n    {a.url}")
+        return
 
     if args.loop:
         while True:

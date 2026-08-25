@@ -36,6 +36,44 @@
       "f.e.a"
     ]
   ],
+  "backtrack": [
+    {
+      "ccaa": "Castilla y Leon",
+      "boletin": "BOCyL",
+      "type": "bocyl",
+      "url": "https://bocyl.jcyl.es/boletin.do?fechaBoletin={fecha}",
+      "days": 30
+    },
+    {
+      "ccaa": "Extremadura",
+      "boletin": "DOE",
+      "type": "doe",
+      "url": "https://doe.juntaex.es/ultimosdoe/mostrardoe.php?fecha={fecha_diaria}&t=o",
+      "extra_urls": [
+        "https://doe.juntaex.es/ultimosdoe/mostrardoe.php?fecha={fecha_diaria}&t=e"
+      ],
+      "days": 30
+    },
+    {
+      "ccaa": "Asturias",
+      "boletin": "BOPA",
+      "type": "bopa",
+      "url": "https://miprincipado.asturias.es/bopa/ultimos-boletines?p_r_p_summaryLastBopa=false&p_r_p_summaryDate={fecha_url}",
+      "days": 30
+    },
+    {
+      "ccaa": "Navarra",
+      "boletin": "BON",
+      "type": "bon_walk",
+      "days": 30
+    },
+    {
+      "ccaa": "Canarias",
+      "boletin": "BOC",
+      "type": "canarias_walk",
+      "days": 30
+    }
+  ],
   "sources": [
     {
       "ccaa": "Madrid",

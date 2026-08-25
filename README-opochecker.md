@@ -74,6 +74,25 @@ python opochecker.py --check        REM comprueba y avisa por Telegram de noveda
 
 `--test` te dice exactamente que falla: token invalido, chat_id incorrecto, o todo correcto.
 
+## Comandos del bot (por Telegram)
+
+Escribe estos comandos en el chat con tu bot (se procesan en la siguiente ejecucion
+programada, como mucho 30 minutos despues):
+
+| Comando | Que hace |
+|---------|----------|
+| `/backtrack [dias]` | Revisa los ultimos N dias (30 por defecto) de los boletines con historico (Castilla y Leon, Extremadura, Asturias, Navarra, Canarias) y te envia los anuncios de facultativos que no te habian llegado (por ejemplo, los anteriores a la activacion del bot). Los envios se marcan como vistos para no repetirlos. |
+| `/status` | Estado del vigilante (fuentes activas, etc.) |
+| `/ayuda` | Esta ayuda |
+
+Tambien funciona en local: `python opochecker.py --backtrack --days 30` (envia por
+Telegram) o `--dry-run` para ver el resultado sin enviarlo.
+
+Nota: BOCM (Madrid), BOCyL si, etc. — el historico cubre los boletines con acceso por
+fecha o archivo: BOCyL, DOE, BOPA, BON y BOC-Canarias. El resto (BOCM, BOPV, DOG, DOCM,
+BOJA) se vigilan en tiempo real desde que el bot esta activo, pero no tienen acceso
+historico sencillo para el retroceso.
+
 ## Programar cada 30 minutos
 
 Tienes dos opciones:
