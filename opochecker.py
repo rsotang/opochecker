@@ -33,6 +33,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 LOG_PATH = os.path.join(BASE_DIR, "opochecker.log")
+ESPECIALIDADES_PATH = os.path.join(BASE_DIR, "especialidades.json")
+USUARIOS_PATH = os.path.join(BASE_DIR, "usuarios.json")
 TASK_NAME = "Opochecker"
 STARTUP_VBS = "arrancar_oculto.vbs"
 STARTUP_DIR = os.path.join(os.environ.get("APPDATA", BASE_DIR),
@@ -309,6 +311,50 @@ def save_state(state: dict):
     os.replace(tmp, STATE_PATH)
 
 
+def load_especialidades() -> dict:
+    if os.path.exists(ESPECIALIDADES_PATH):
+        try:
+            with open(ESPECIALIDADES_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def load_usuarios() -> dict:
+    if os.path.exists(USUARIOS_PATH):
+        try:
+            with open(USUARIOS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def save_usuarios(data: dict):
+    tmp = USUARIOS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USUARIOS_PATH)
+
+
+def user_settings(data: dict, chat_id) -> dict:
+    return data.setdefault(str(chat_id), {"especialidades": [], "extra_keywords": []})
+
+
+def effective_keywords(cfg: dict, chat_id) -> list:
+    """Keywords del chat: base (config) + especialidades seleccionadas + extras del usuario."""
+    kws = [list(g) for g in cfg.get("keywords", [["facultativo", "especialista"]])]
+    esp = load_especialidades()
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    for sid in us.get("especialidades", []):
+        for g in esp.get(sid, {}).get("keywords", []):
+            kws.append(list(g))
+    kws.extend(list(g) for g in us.get("extra_keywords", []))
+    return kws
+
+
 # ----------------------------------------------------------- telegram
 
 def telegram_api(method: str, token: str, params: dict = None) -> tuple:
@@ -330,13 +376,15 @@ def telegram_api(method: str, token: str, params: dict = None) -> tuple:
         return None, str(e)
 
 
-def telegram_send(token: str, chat: str, text: str) -> bool:
+def telegram_send(token: str, chat: str, text: str, reply_markup: str = None) -> bool:
     if not token or not chat:
         log.error("Telegram no configurado: falta bot_token/chat_id en config.json (o env OPO_TELEGRAM_*)")
         return False
-    ok, err = telegram_api("sendMessage", token, {
-        "chat_id": chat, "text": text, "parse_mode": "HTML",
-        "disable_web_page_preview": "true"})
+    params = {"chat_id": chat, "text": text, "parse_mode": "HTML",
+              "disable_web_page_preview": "true"}
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    ok, err = telegram_api("sendMessage", token, params)
     if not ok:
         log.error("Telegram (sendMessage): %s", err)
         return False
@@ -344,6 +392,21 @@ def telegram_send(token: str, chat: str, text: str) -> bool:
         log.error("Telegram respondio ok=false")
         return False
     return True
+
+
+def telegram_edit_keyboard(token: str, chat: str, msg_id, reply_markup: str) -> bool:
+    ok, err = telegram_api("editMessageReplyMarkup", token, {
+        "chat_id": chat, "message_id": msg_id, "reply_markup": reply_markup})
+    if not ok or not ok.get("ok"):
+        log.error("Telegram (editMessageReplyMarkup): %s", err or "fallo")
+        return False
+    return True
+
+
+def telegram_answer(token: str, cb_id: str, text: str = "") -> bool:
+    ok, err = telegram_api("answerCallbackQuery", token, {
+        "callback_query_id": cb_id, "text": text, "show_alert": "false"})
+    return bool(ok and ok.get("ok"))
 
 
 def telegram_test(token: str, chat: str) -> str:
@@ -368,23 +431,241 @@ def esc(s: str) -> str:
     return html.escape(s, quote=False)
 
 
+# --------------------------------------------------- especialidades y keywords
+
+def keyword_text(g: list) -> str:
+    return " + ".join(g)
+
+
+def catalog_text(esp: dict, sel: list) -> str:
+    lines = ["<b>Especialidades disponibles</b> (toca los botones para activar/desactivar):\n"]
+    for sid in esp:
+        marca = "[x]" if sid in sel else "[ ]"
+        lines.append(f"{marca} {esc(esp[sid]['nombre'])}")
+    lines.append("\nCada especialidad anade sus keywords a la monitorizacion. "
+                 "Pulsa los botones de abajo y luego /misespecialidades.")
+    return "\n".join(lines)
+
+
+def specialty_keyboard(esp: dict, sel: list) -> str:
+    rows = []
+    for sid, info in esp.items():
+        marca = "x" if sid in sel else " "
+        rows.append([{"text": f"[{marca}] {info['nombre']}", "callback_data": f"esp:{sid}"}])
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+
+def keywords_report(cfg: dict, chat_id) -> str:
+    esp = load_especialidades()
+    us = user_settings(load_usuarios(), chat_id)
+    lines = ["<b>Tus keywords</b> (un anuncio se avisa si cumple todas las de un grupo):\n"]
+    lines.append("<b>Base:</b>")
+    for i, g in enumerate(cfg.get("keywords", []), 1):
+        lines.append(f"  {i}. {keyword_text(g)}")
+    sel = us.get("especialidades", [])
+    if sel:
+        lines.append("\n<b>Especialidades activas:</b>")
+        for sid in sel:
+            info = esp.get(sid, {})
+            kws = " | ".join(keyword_text(g) for g in info.get("keywords", []))
+            lines.append(f"  - {info.get('nombre', sid)}: {kws}")
+    else:
+        lines.append("\n<b>Especialidades activas:</b> ninguna")
+    extra = us.get("extra_keywords", [])
+    if extra:
+        lines.append("\n<b>Extras tuyos:</b>")
+        for i, g in enumerate(extra, 1):
+            lines.append(f"  {i}. {keyword_text(g)}  (/delkw {i})")
+    lines.append("\nEditar extras: /addkw termino1 termino2 ...  |  /resetkw")
+    return "\n".join(lines)
+
+
+def set_specialty(chat_id, sid: str, active: bool) -> str:
+    esp = load_especialidades()
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    sel = us.setdefault("especialidades", [])
+    if active and sid not in sel:
+        sel.append(sid)
+    if not active and sid in sel:
+        sel.remove(sid)
+    save_usuarios(data)
+    info = esp.get(sid, {})
+    kws = " | ".join(keyword_text(g) for g in info.get("keywords", []))
+    estado = "activada" if active else "desactivada"
+    return f"{info.get('nombre', sid)} {estado}. Keywords: {kws}"
+
+
+def add_extra_keywords(chat_id, terms: list) -> str:
+    if not terms:
+        return "Uso: /addkw termino1 termino2 ... (el anuncio debe contener TODOS los terminos)"
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    extra = us.setdefault("extra_keywords", [])
+    if terms in extra:
+        return f"Esa keyword ya existe: {keyword_text(terms)}"
+    extra.append(terms)
+    save_usuarios(data)
+    return f"Keyword anadida: {keyword_text(terms)}"
+
+
+def del_extra_keyword(chat_id, idx: int) -> str:
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    extra = us.get("extra_keywords", [])
+    if not 1 <= idx <= len(extra):
+        return f"No hay keyword extra numero {idx}. Usa /keywords para ver la lista."
+    g = extra.pop(idx - 1)
+    save_usuarios(data)
+    return f"Keyword extra eliminada: {keyword_text(g)}"
+
+
+def reset_extra_keywords(chat_id) -> str:
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    n = len(us.get("extra_keywords", []))
+    us["extra_keywords"] = []
+    save_usuarios(data)
+    return f"Keywords extras eliminadas ({n})."
+
+
+def handle_update(upd: dict, cfg: dict, token: str) -> bool:
+    """Procesa un update del bot. Devuelve True si era un comando/callback atendido."""
+    cb = upd.get("callback_query")
+    if cb:
+        data = (cb.get("data") or "").strip()
+        chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
+        msg_id = (cb.get("message") or {}).get("message_id")
+        cb_id = cb.get("id", "")
+        if data.startswith("esp:") and chat_id is not None:
+            sid = data[4:]
+            active = sid not in user_settings(load_usuarios(), chat_id)["especialidades"]
+            texto = set_specialty(chat_id, sid, active)
+            telegram_answer(token, cb_id, texto)
+            if msg_id:
+                sel = user_settings(load_usuarios(), chat_id)["especialidades"]
+                telegram_edit_keyboard(token, chat_id, msg_id,
+                                       specialty_keyboard(load_especialidades(), sel))
+            return True
+        telegram_answer(token, cb_id, "Accion no reconocida")
+        return True
+
+    msg = upd.get("message") or {}
+    text = (msg.get("text") or "").strip()
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not text or chat_id is None:
+        return False
+    cmd, _, arg = text.partition(" ")
+    cmd = cmd.lower()
+    log.info("Comando recibido: %s (chat %s)", cmd, chat_id)
+
+    if cmd == "/backtrack":
+        try:
+            days = min(max(int(arg.strip()), 1), 60)
+        except ValueError:
+            days = 30
+        telegram_send(token, chat_id,
+                      f"Revisando los ultimos <b>{days} dias</b> de boletines "
+                      f"(tarda unos minutos)...")
+        items = run_backtrack(cfg, days, send_to=chat_id)
+        log.info("/backtrack: %d coincidencias enviadas", len(items))
+        return True
+
+    if cmd == "/especialidades":
+        esp = load_especialidades()
+        sel = user_settings(load_usuarios(), chat_id)["especialidades"]
+        telegram_send(token, chat_id, catalog_text(esp, sel),
+                      specialty_keyboard(esp, sel))
+        return True
+
+    if cmd == "/misespecialidades":
+        telegram_send(token, chat_id, keywords_report(cfg, chat_id))
+        return True
+
+    if cmd == "/keywords":
+        telegram_send(token, chat_id, keywords_report(cfg, chat_id))
+        return True
+
+    if cmd == "/addkw":
+        terms = [t for t in re.split(r"[\s,;]+", arg.strip().lower()) if t]
+        telegram_send(token, chat_id, add_extra_keywords(chat_id, terms))
+        return True
+
+    if cmd == "/delkw":
+        try:
+            idx = int(arg.strip())
+        except ValueError:
+            telegram_send(token, chat_id, "Uso: /delkw numero  (ver /keywords)")
+            return True
+        telegram_send(token, chat_id, del_extra_keyword(chat_id, idx))
+        return True
+
+    if cmd == "/resetkw":
+        telegram_send(token, chat_id, reset_extra_keywords(chat_id))
+        return True
+
+    if cmd == "/status":
+        n = len([s for s in cfg.get("sources", []) if s.get("enabled", True)])
+        telegram_send(token, chat_id,
+                      f"<b>Opochecker</b> activo.\n"
+                      f"Fuentes activas: {n}\n"
+                      f"Comandos: /backtrack [dias], /especialidades, /keywords, /status, /ayuda")
+        return True
+
+    if cmd in ("/ayuda", "/help", "/start") or not cmd.startswith("/"):
+        telegram_send(token, chat_id, WELCOME_TEXT)
+        return True
+
+    telegram_send(token, chat_id,
+                  f"Comando {esc(cmd)} no reconocido. Envia /ayuda para ver los comandos.")
+    return True
+
+
+def process_commands(cfg: dict):
+    """Procesa updates pendientes del bot (getUpdates). Se ejecuta en cada --check."""
+    token = cfg["_token"]
+    if not token:
+        return
+    ok, err = telegram_api("getUpdates", token, {"timeout": 0})
+    if not ok:
+        return
+    updates = ok.get("result", [])
+    if not updates:
+        return
+    max_id = 0
+    for upd in updates:
+        max_id = max(max_id, upd.get("update_id", 0))
+        try:
+            handle_update(upd, cfg, token)
+        except Exception as e:
+            log.error("Error procesando update: %s", e)
+    if max_id:
+        telegram_api("getUpdates", token, {"offset": max_id + 1})
+
+
 WELCOME_TEXT = (
     "<b>Opochecker</b> - vigilante de oposiciones de facultativos especialistas\n\n"
     "Vigilo los boletines oficiales de las comunidades autonomas y te aviso aqui cuando "
     "publican algo sobre <b>oposiciones y concursos de facultativos especialistas</b> "
     "(medicos especialistas del sistema publico).\n\n"
     "<b>Comandos:</b>\n"
-    "/backtrack [dias] - Revisa los ultimos dias (30 por defecto) de los boletines por "
-    "anuncios que se hayan escapado (por ejemplo, anteriores a la activacion del bot) y "
-    "te los envia. Tarda unos minutos.\n"
-    "/status - Estado del vigilante (fuentes activas)\n"
+    "/especialidades - Elige que especialidades vigilar (medicina, cardiologia, "
+    "pediatria...): toca los botones para activarlas y veras sus keywords\n"
+    "/keywords - Muestra tus keywords y las de tus especialidades\n"
+    "/addkw termino1 termino2 - Anade tu propia keyword (grupo: deben cumplirse TODOS "
+    "los terminos)\n"
+    "/delkw numero - Elimina una keyword anadida por ti\n"
+    "/resetkw - Borra todas tus keywords anadidas\n"
+    "/backtrack [dias] - Revisa los ultimos dias de boletines por anuncios que se hayan "
+    "escapado y te los envia\n"
+    "/misespecialidades - Resumen de tus especialidades y keywords\n"
+    "/status - Estado del vigilante\n"
     "/ayuda - Esta ayuda\n\n"
     "<b>Funciones:</b>\n"
-    "- Aviso automatico de cada documento nuevo que coincida con tus keywords "
-    "(facultativo especialista, medico especialista, licenciado especialista, F.E.A...)\n"
+    "- Aviso automatico de cada documento nuevo que coincida con tus keywords\n"
     "- Sin mensajes duplicados: cada documento se avisa una sola vez\n"
     "- Los avisos incluyen el titulo del documento y el enlace para verlo\n\n"
-    "Envia /backtrack cuando quieras repasar el historico reciente."
+    "Empieza con /especialidades para configurar lo que te interesa."
 )
 
 
@@ -464,7 +745,7 @@ def fetch_source(src: dict) -> list:
 def run_check(cfg: dict, verbose: bool = False) -> int:
     state = load_state()
     seen = state.setdefault("seen", {})
-    keywords = cfg.get("keywords", [["facultativo", "especialista"]])
+    keywords = effective_keywords(cfg, cfg["_chat"])
     new_items = []
 
     for src in cfg.get("sources", []):
@@ -567,7 +848,7 @@ def bt_walk_canarias(limit: date) -> list:
 def bt_collect(cfg: dict, days: int) -> list:
     """Recoge de las fuentes con historico los anuncios de los ultimos `days` dias."""
     limit = date.today() - timedelta(days=days)
-    keywords = cfg.get("keywords", [["facultativo", "especialista"]])
+    keywords = effective_keywords(cfg, cfg["_chat"])
     seen = load_state().setdefault("seen", {})
     found = []
 
@@ -643,53 +924,6 @@ def run_backtrack(cfg: dict, days: int = 30, dry_run: bool = False,
         return items
     bt_send(cfg, items, days, send_to)
     return items
-
-
-def process_commands(cfg: dict):
-    """Procesa comandos pendientes del bot (getUpdates). Se ejecuta en cada --check."""
-    token = cfg["_token"]
-    if not token:
-        return
-    ok, err = telegram_api("getUpdates", token, {"timeout": 0})
-    if not ok:
-        return
-    updates = ok.get("result", [])
-    if not updates:
-        return
-    max_id = 0
-    for upd in updates:
-        max_id = max(max_id, upd.get("update_id", 0))
-        msg = upd.get("message") or {}
-        text = (msg.get("text") or "").strip()
-        chat_id = (msg.get("chat") or {}).get("id")
-        if not text or chat_id is None:
-            continue
-        cmd, _, arg = text.partition(" ")
-        cmd = cmd.lower()
-        log.info("Comando recibido: %s (chat %s)", cmd, chat_id)
-        if cmd == "/backtrack":
-            try:
-                days = min(max(int(arg.strip()), 1), 60)
-            except ValueError:
-                days = 30
-            telegram_send(token, chat_id,
-                          f"Revisando los ultimos <b>{days} dias</b> de boletines "
-                          f"(tarda unos minutos)...")
-            items = run_backtrack(cfg, days, send_to=chat_id)
-            log.info("/backtrack: %d coincidencias enviadas", len(items))
-        elif cmd == "/status":
-            n = len([s for s in cfg.get("sources", []) if s.get("enabled", True)])
-            telegram_send(token, chat_id,
-                          f"<b>Opochecker</b> activo.\n"
-                          f"Fuentes activas: {n}\n"
-                          f"Comandos: /backtrack [dias], /status, /ayuda")
-        elif cmd in ("/ayuda", "/help", "/start") or not cmd.startswith("/"):
-            telegram_send(token, chat_id, WELCOME_TEXT)
-        else:
-            telegram_send(token, chat_id,
-                          f"Comando {esc(cmd)} no reconocido. Envia /ayuda para ver los comandos.")
-    if max_id:
-        telegram_api("getUpdates", token, {"offset": max_id + 1})
 
 
 # ----------------------------------------------------------- CLI

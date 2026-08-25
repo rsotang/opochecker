@@ -31,6 +31,6 @@ jobs:
         run: |
           git config user.name "opochecker-bot"
           git config user.email "opochecker@users.noreply.github.com"
-          git add state.json
+          git add state.json usuarios.json
           git commit -m "update state" || echo "sin cambios"
           git push || echo "push sin cambios"

@@ -85,7 +85,13 @@ programada, como mucho 30 minutos despues):
 
 | Comando | Que hace |
 |---------|----------|
-| `/backtrack [dias]` | Revisa los ultimos N dias (30 por defecto) de los boletines con historico (Castilla y Leon, Extremadura, Asturias, Navarra, Canarias) y te envia los anuncios de facultativos que no te habian llegado (por ejemplo, los anteriores a la activacion del bot). Los envios se marcan como vistos para no repetirlos. |
+| `/especialidades` | **Selector de especialidades**: envia la lista de 34 especialidades medicas y facultativas con botones para activar/desactivar cada una. Al pulsar un boton se muestra la keyword asociada (cardiologia -> "cardiolog", pediatria -> "pediatr", anestesiologia -> "anestesio", etc.). Las especialidades activas se suman a la monitorizacion |
+| `/keywords` | Muestra las keywords base, las de tus especialidades activas y las tuyas anadidas |
+| `/addkw termino1 termino2` | Anade tu propia keyword: un grupo donde el anuncio debe contener TODOS los terminos |
+| `/delkw numero` | Elimina una keyword anadida por ti (usa /keywords para ver los numeros) |
+| `/resetkw` | Borra todas tus keywords anadidas |
+| `/backtrack [dias]` | Revisa los ultimos N dias (30 por defecto) de los boletines con historico (Castilla y Leon, Extremadura, Asturias, Navarra, Canarias, Murcia) y te envia los anuncios de facultativos que no te habian llegado. Los envios se marcan como vistos para no repetirlos. |
+| `/misespecialidades` | Resumen de tus especialidades y keywords efectivas |
 | `/status` | Estado del vigilante (fuentes activas, etc.) |
 | `/ayuda` | Esta ayuda |
 

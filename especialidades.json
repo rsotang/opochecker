@@ -1,0 +1,138 @@
+{
+  "anestesiologia": {
+    "nombre": "Anestesiologia y Reanimacion",
+    "keywords": [["anestesio"], ["anestesista"]]
+  },
+  "cardiologia": {
+    "nombre": "Cardiologia",
+    "keywords": [["cardiolog"], ["hemodinamica"]]
+  },
+  "cirugia_general": {
+    "nombre": "Cirugia General y del Aparato Digestivo",
+    "keywords": [["cirugia general"], ["cirujano general"]]
+  },
+  "dermatologia": {
+    "nombre": "Dermatologia",
+    "keywords": [["dermatolog"]]
+  },
+  "digestivo": {
+    "nombre": "Aparato Digestivo",
+    "keywords": [["digestiv"], ["gastroenterolog"]]
+  },
+  "endocrinologia": {
+    "nombre": "Endocrinologia y Nutricion",
+    "keywords": [["endocrin"]]
+  },
+  "familia": {
+    "nombre": "Medicina Familiar y Comunitaria",
+    "keywords": [["medic", "familia"], ["medicina", "familiar"], ["mfyc"], ["mfy"]]
+  },
+  "farmacia": {
+    "nombre": "Farmacia Hospitalaria",
+    "keywords": [["farmacia hospitalaria"], ["farmaceutico hospitalario"]]
+  },
+  "geriatria": {
+    "nombre": "Geriatria",
+    "keywords": [["geriatr"]]
+  },
+  "ginecologia": {
+    "nombre": "Ginecologia y Obstetricia",
+    "keywords": [["ginecolog"], ["obstetric"], ["tocoginecolog"]]
+  },
+  "hematologia": {
+    "nombre": "Hematologia",
+    "keywords": [["hematolog"]]
+  },
+  "intensiva": {
+    "nombre": "Medicina Intensiva",
+    "keywords": [["intensiv"], ["cuidados criticos"]]
+  },
+  "interna": {
+    "nombre": "Medicina Interna",
+    "keywords": [["medicina interna"], ["internista"]]
+  },
+  "microbiologia": {
+    "nombre": "Microbiologia",
+    "keywords": [["microbiolog"]]
+  },
+  "nefrologia": {
+    "nombre": "Nefrologia",
+    "keywords": [["nefrolog"]]
+  },
+  "neumologia": {
+    "nombre": "Neumologia",
+    "keywords": [["neumolog"]]
+  },
+  "neurocirugia": {
+    "nombre": "Neurocirugia",
+    "keywords": [["neurocirug"]]
+  },
+  "neurologia": {
+    "nombre": "Neurologia",
+    "keywords": [["neurolog"]]
+  },
+  "nuclear": {
+    "nombre": "Medicina Nuclear",
+    "keywords": [["medicina nuclear"]]
+  },
+  "oftalmologia": {
+    "nombre": "Oftalmologia",
+    "keywords": [["oftalmolog"]]
+  },
+  "oncologia": {
+    "nombre": "Oncologia",
+    "keywords": [["oncolog"]]
+  },
+  "orl": {
+    "nombre": "Otorrinolaringologia",
+    "keywords": [["otorrinolaringolog"], ["orl"]]
+  },
+  "paliativos": {
+    "nombre": "Cuidados Paliativos",
+    "keywords": [["paliativ"]]
+  },
+  "patologia": {
+    "nombre": "Anatomia Patologica",
+    "keywords": [["anatomia patologica"], ["anatomopatolog"]]
+  },
+  "pediatria": {
+    "nombre": "Pediatria",
+    "keywords": [["pediatr"]]
+  },
+  "preventiva": {
+    "nombre": "Medicina Preventiva y Salud Publica",
+    "keywords": [["preventiv"]]
+  },
+  "psiquiatria": {
+    "nombre": "Psiquiatria",
+    "keywords": [["psiquiatr"]]
+  },
+  "radiologia": {
+    "nombre": "Radiodiagnostico",
+    "keywords": [["radiolog"], ["radiodiagnost"]]
+  },
+  "radioterapia": {
+    "nombre": "Oncologia Radioterapica",
+    "keywords": [["radioterap"]]
+  },
+  "reumatologia": {
+    "nombre": "Reumatologia",
+    "keywords": [["reumatolog"]]
+  },
+  "trabajo": {
+    "nombre": "Medicina del Trabajo",
+    "keywords": [["medicina del trabajo"], ["medic", "trabajo"]]
+  },
+  "traumatologia": {
+    "nombre": "Traumatologia (Cirugia Ortopedica)",
+    "keywords": [["traumatolog"], ["ortoped"], ["cirugia ortopedica"]]
+  },
+  "urgencias": {
+    "nombre": "Urgencias Hospitalarias",
+    "keywords": [["urgenci"]]
+  },
+  "urologia": {
+    "nombre": "Urologia",
+    "keywords": [["urolog"]]
+  }
+}
