@@ -60,11 +60,11 @@ def is_match(title: str, url: str, keyword_groups) -> bool:
     return any(all(normalize(term) in blob for term in group) for group in keyword_groups)
 
 
-def http_get(url: str, timeout: int = 25, tries: int = 3) -> str:
+def http_get(url: str, timeout: int = 25, tries: int = 3, accept: str = "*/*") -> str:
     last = None
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": accept})
             with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
                 raw = r.read()
             try:
@@ -214,6 +214,50 @@ def parse_bopa(body: str) -> list:
     return out
 
 
+def parse_borm_sumario(body: str) -> list:
+    """BORM (Murcia): API JSON del sumario de un dia."""
+    out = []
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return out
+    fecha = data.get("fechaPublicacion", "")
+    for an in data.get("anunciosBoletin", []):
+        title = an.get("sumario", "").strip()
+        numero = an.get("numero")
+        if not title:
+            continue
+        url = f"https://www.borm.es/#/anuncio/{fecha}/{numero}"
+        out.append(Announcement(title, url))
+    return out
+
+
+def fetch_boib(issue_url: str) -> list:
+    """BOIB (Baleares): pagina del numero -> secciones II (personal) y V (anuncios)."""
+    page = http_get(issue_url)
+    sections = re.findall(
+        r'href="(/eboibfront/[a-z]{2}/\d{4}/\d+/seccio-(?:ii-autoritats-i-personal|v-anuncis)/\d+)"',
+        page)
+    out = []
+    seen = set()
+    for s in sections:
+        sec = http_get(abs_url("https://www.caib.es", s))
+        for m in re.finditer(r"<li>\s*<p>(.*?)</p>\s*<p class=\"registre\">(.*?)</p>(.*?)</ul>",
+                             sec, re.S | re.I):
+            title = strip_tags(m.group(1))
+            tail = m.group(3)
+            murl = re.search(r'(?:class="html"[^>]*href="([^"]+)"|href="([^"]+)"[^>]*class="html")',
+                             tail, re.I)
+            if not murl or not title:
+                continue
+            url = html.unescape(murl.group(1) or murl.group(2))
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append(Announcement(title, url))
+    return out
+
+
 def extract_links(base: str, body: str, link_re: str, max_links: int = 400) -> list:
     """Extrae anuncios de un HTML: enlaces cuyo href casa con link_re, con su texto."""
     out = []
@@ -352,6 +396,7 @@ PARSERS = {
     "canarias": parse_canarias,
     "doe": parse_doe,
     "bopa": parse_bopa,
+    "borm": parse_borm_sumario,
 }
 
 
@@ -391,6 +436,20 @@ def fetch_source(src: dict) -> list:
             raise RuntimeError("Canarias: no se localizo el boletin actual en la portada")
         body = http_get(abs_url("https://www.gobiernodecanarias.org", m.group(1)))
         out = parse_canarias(body)
+    elif stype == "borm":
+        meta = json.loads(http_get(url, accept="application/json"))
+        fecha = meta.get("fechaPublicacion")
+        if not fecha:
+            raise RuntimeError("BORM: sin fechaPublicacion")
+        sumario = http_get(f"https://www.borm.es/services/boletin/fecha/{fecha}/sumario",
+                           accept="application/json")
+        out = parse_borm_sumario(sumario)
+    elif stype == "boib":
+        rss = http_get(url)
+        items = parse_rss(url, rss)
+        if not items:
+            raise RuntimeError("BOIB: RSS sin numeros")
+        out = fetch_boib(items[0].url)
     elif stype in PARSERS:
         body = http_get(url)
         out = PARSERS[stype](body)
@@ -461,14 +520,17 @@ MESES = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6
 def fmt_bt(url_tpl: str, day: date) -> str:
     return url_tpl.format(fecha=day.strftime("%d/%m/%Y"),
                           fecha_diaria=day.strftime("%Y%m%d"),
+                          fecha_borm=day.strftime("%d-%m-%Y"),
                           fecha_url=urllib.parse.quote(day.strftime("%d/%m/%Y")))
 
 
 def bt_fetch_day(src: dict, day: date) -> list:
-    """Fuentes con URL por dia (bocyl, doe, bopa...)."""
-    items = PARSERS[src["type"]](http_get(fmt_bt(src["url"], day)))
+    """Fuentes con URL por dia (bocyl, doe, bopa, borm...)."""
+    items = PARSERS[src["type"]](http_get(fmt_bt(src["url"], day),
+                                          accept=src.get("accept", "*/*")))
     for extra in src.get("extra_urls", []):
-        items.extend(PARSERS[src["type"]](http_get(fmt_bt(extra, day))))
+        items.extend(PARSERS[src["type"]](http_get(fmt_bt(extra, day),
+                                                   accept=src.get("accept", "*/*"))))
     return items
 
 

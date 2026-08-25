@@ -25,6 +25,10 @@
       "convocatoria"
     ],
     [
+      "facultatiu",
+      "especialista"
+    ],
+    [
       "licenciado",
       "especialista"
     ],
@@ -71,6 +75,14 @@
       "ccaa": "Canarias",
       "boletin": "BOC",
       "type": "canarias_walk",
+      "days": 30
+    },
+    {
+      "ccaa": "Murcia",
+      "boletin": "BORM",
+      "type": "borm",
+      "url": "https://www.borm.es/services/boletin/fecha/{fecha_borm}/sumario",
+      "accept": "application/json",
       "days": 30
     }
   ],
@@ -157,19 +169,26 @@
     {
       "ccaa": "Baleares",
       "boletin": "BOIB",
-      "type": "rss",
+      "type": "boib",
       "url": "https://www.caib.es/eboibfront/indexrss.do?lang=ca",
-      "enabled": false,
-      "nota": "Pendiente: el RSS es a nivel de numero (sin titulos de anuncios), el detalle es SPA"
+      "enabled": true
+    },
+    {
+      "ccaa": "Murcia",
+      "boletin": "BORM",
+      "type": "borm",
+      "url": "https://www.borm.es/services/boletin/ultimo",
+      "accept": "application/json",
+      "enabled": true
     },
     {
       "ccaa": "Aragon",
       "boletin": "BOA",
       "type": "page",
-      "url": "https://www.boa.aragon.es/cgi-bin/EBOA/BRSCGI?CMD=VERPRB&BASE=BOA&TIPO=DIARIO&FECHA={fecha}",
+      "url": "https://www.boa.aragon.es/cgi-bin/EBOA/BRSCGI?CMD=VERLST&BASE=BOLE&DOCS=1-100&SEC=OPENDATABOAJSONELI&OUTPUTMODE=JSON&SORT=-PUBL&SEPARADOR=&FDIS-C={fecha}",
       "link_re": "",
       "enabled": false,
-      "nota": "Pendiente: requiere sesion/cookies (pagina JS)"
+      "nota": "API JSON descubierta (opendata) pero protegida: solo responde a navegadores (devuelve HTML al resto)"
     },
     {
       "ccaa": "Cantabria",
@@ -178,7 +197,7 @@
       "url": "https://boc.cantabria.es/boces/boletines.do",
       "link_re": "",
       "enabled": false,
-      "nota": "Pendiente: listado via formulario JS"
+      "nota": "Pendiente: listado via formulario JS (POST devuelve error sin sesion)"
     },
     {
       "ccaa": "Cataluna",
@@ -187,7 +206,7 @@
       "url": "https://dogc.gencat.cat/ca/inici",
       "link_re": "",
       "enabled": false,
-      "nota": "Pendiente: SPA JavaScript, requiere API interna"
+      "nota": "Pendiente: API REST descubierta (/eadop-rest/api/dogc/summaryLastPublishedDOGC POST language=ca) pero devuelve 404 en produccion"
     },
     {
       "ccaa": "Comunidad Valenciana",

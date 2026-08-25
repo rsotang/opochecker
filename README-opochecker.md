@@ -30,10 +30,14 @@ Python puro (solo stdlib), sin dependencias que instalar. Funciona en Windows.
 | Extremadura | DOE | boletin del dia |
 | Asturias | BOPA | sumario del dia |
 | Andalucia | BOJA | RSS secciones "Oposiciones, concursos" y "Anuncios" |
+| Baleares | BOIB | secciones "Autoritats i personal" y "Anuncis" del ultimo numero |
+| Murcia | BORM | API JSON del sumario diario |
 
-**Pendientes** (en `config.json` con `"enabled": false`): Aragon (BOA), Cantabria (BOC),
-Cataluna (DOGC), C. Valenciana (DOGV), Murcia (BORM) y La Rioja (BOR) — sus webs son
-aplicaciones JavaScript sin contenido parseable directamente; requieren API interna o login.
+**Pendientes** (en `config.json` con `"enabled": false`): Aragon (BOA) — tiene una API
+JSON de datos abiertos descubierta (`SEC=OPENDATABOAJSONELI`) pero solo responde a
+navegadores; Cataluna (DOGC) — API REST descubierta (`/eadop-rest/api/dogc/...`) pero
+da 404 en produccion; C. Valenciana (DOGV), Cantabria y La Rioja (BOR) — aplicaciones
+JavaScript con sesion/bloqueo anti-bot.
 
 ## Configuracion (una sola vez)
 
