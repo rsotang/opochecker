@@ -60,14 +60,22 @@ def is_match(title: str, url: str, keyword_groups) -> bool:
     return any(all(normalize(term) in blob for term in group) for group in keyword_groups)
 
 
-def http_get(url: str, timeout: int = 25) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
-        raw = r.read()
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1", "replace")
+def http_get(url: str, timeout: int = 25, tries: int = 3) -> str:
+    last = None
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+            with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
+                raw = r.read()
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return raw.decode("latin-1", "replace")
+        except Exception as e:
+            last = e
+            if attempt < tries - 1:
+                time.sleep(3 * (attempt + 1))
+    raise last
 
 
 def abs_url(base: str, href: str) -> str:
