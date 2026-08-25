@@ -1,0 +1,182 @@
+{
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "keywords": [
+    [
+      "facultativo",
+      "especialista"
+    ],
+    [
+      "facultativo",
+      "concurso"
+    ],
+    [
+      "facultativo",
+      "oposici"
+    ],
+    [
+      "facultativo",
+      "proceso selectiv"
+    ],
+    [
+      "facultativo",
+      "convocatoria"
+    ],
+    [
+      "licenciado",
+      "especialista"
+    ],
+    [
+      "medico",
+      "especialista"
+    ],
+    [
+      "f.e.a"
+    ]
+  ],
+  "sources": [
+    {
+      "ccaa": "Madrid",
+      "boletin": "BOCM",
+      "type": "bocm",
+      "url": "https://www.bocm.es/ultimo-bocm",
+      "enabled": true
+    },
+    {
+      "ccaa": "Castilla y Leon",
+      "boletin": "BOCyL",
+      "type": "bocyl",
+      "url": "https://bocyl.jcyl.es/boletin.do?fechaBoletin={fecha}",
+      "enabled": true
+    },
+    {
+      "ccaa": "Pais Vasco",
+      "boletin": "BOPV",
+      "type": "rss",
+      "url": "https://www.euskadi.eus/bopv2/datos/Ultimo.xml",
+      "enabled": true
+    },
+    {
+      "ccaa": "Galicia",
+      "boletin": "DOG",
+      "type": "rss",
+      "url": "https://www.xunta.gal/diario-oficial-galicia/rss/Seccion7_gl.rss",
+      "enabled": true
+    },
+    {
+      "ccaa": "Canarias",
+      "boletin": "BOC",
+      "type": "canarias",
+      "url": "https://www.gobiernodecanarias.org/boc/",
+      "enabled": true
+    },
+    {
+      "ccaa": "Navarra",
+      "boletin": "BON",
+      "type": "page",
+      "url": "https://bon.navarra.es/es/ultimo",
+      "link_re": "bon\\.navarra\\.es/es/anuncio/",
+      "enabled": true
+    },
+    {
+      "ccaa": "Castilla-La Mancha",
+      "boletin": "DOCM",
+      "type": "page",
+      "url": "https://docm.jccm.es/docm/",
+      "link_re": "descargarArchivo\\.do\\?ruta=\\d{4}",
+      "enabled": true
+    },
+    {
+      "ccaa": "Extremadura",
+      "boletin": "DOE",
+      "type": "doe",
+      "url": "https://doe.juntaex.es/ultimosdoe/mostrardoe.php?fecha={fecha_diaria}&t=o",
+      "enabled": true
+    },
+    {
+      "ccaa": "Asturias",
+      "boletin": "BOPA",
+      "type": "bopa",
+      "url": "https://miprincipado.asturias.es/bopa/ultimos-boletines?p_r_p_summaryLastBopa=true",
+      "enabled": true
+    },
+    {
+      "ccaa": "Andalucia",
+      "boletin": "BOJA",
+      "type": "rss",
+      "url": "https://www.juntadeandalucia.es/boja/distribucion/s53.xml",
+      "enabled": true
+    },
+    {
+      "ccaa": "Andalucia",
+      "boletin": "BOJA (anuncios)",
+      "type": "rss",
+      "url": "https://www.juntadeandalucia.es/boja/distribucion/s57.xml",
+      "enabled": true
+    },
+    {
+      "ccaa": "Baleares",
+      "boletin": "BOIB",
+      "type": "rss",
+      "url": "https://www.caib.es/eboibfront/indexrss.do?lang=ca",
+      "enabled": false,
+      "nota": "Pendiente: el RSS es a nivel de numero (sin titulos de anuncios), el detalle es SPA"
+    },
+    {
+      "ccaa": "Aragon",
+      "boletin": "BOA",
+      "type": "page",
+      "url": "https://www.boa.aragon.es/cgi-bin/EBOA/BRSCGI?CMD=VERPRB&BASE=BOA&TIPO=DIARIO&FECHA={fecha}",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: requiere sesion/cookies (pagina JS)"
+    },
+    {
+      "ccaa": "Cantabria",
+      "boletin": "BOC",
+      "type": "page",
+      "url": "https://boc.cantabria.es/boces/boletines.do",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: listado via formulario JS"
+    },
+    {
+      "ccaa": "Cataluna",
+      "boletin": "DOGC",
+      "type": "page",
+      "url": "https://dogc.gencat.cat/ca/inici",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: SPA JavaScript, requiere API interna"
+    },
+    {
+      "ccaa": "Comunidad Valenciana",
+      "boletin": "DOGV",
+      "type": "page",
+      "url": "https://dogv.gva.es/va/inici/",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: SPA JavaScript, requiere API interna"
+    },
+    {
+      "ccaa": "Murcia",
+      "boletin": "BORM",
+      "type": "page",
+      "url": "https://www.borm.es",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: SPA JavaScript, requiere API interna"
+    },
+    {
+      "ccaa": "La Rioja",
+      "boletin": "BOR",
+      "type": "page",
+      "url": "https://ias1.larioja.org/boletin",
+      "link_re": "",
+      "enabled": false,
+      "nota": "Pendiente: requiere login CAS"
+    }
+  ]
+}

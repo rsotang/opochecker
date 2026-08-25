@@ -1,0 +1,36 @@
+name: Opochecker
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TZ: Europe/Madrid
+      OPO_TELEGRAM_TOKEN: ${{ secrets.OPO_TELEGRAM_TOKEN }}
+      OPO_TELEGRAM_CHAT_ID: ${{ secrets.OPO_TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preparar configuracion
+        run: cp config.json.example config.json
+
+      - name: Comprobar boletines y avisar por Telegram
+        run: python opochecker.py --check
+
+      - name: Guardar estado (evita avisos repetidos)
+        run: |
+          git config user.name "opochecker-bot"
+          git config user.email "opochecker@users.noreply.github.com"
+          git add state.json
+          git commit -m "update state" || echo "sin cambios"
+          git push || echo "push sin cambios"

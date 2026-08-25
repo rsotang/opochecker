@@ -1,0 +1,10 @@
+# El config.json local contiene el token de Telegram: NO debe subirse a GitHub
+config.json
+opochecker.log
+state.json.tmp
+__pycache__/
+
+# Archivos del proyecto de prompts de opencode (no forman parte del vigilante)
+prompt/
+README.es.md
+opencode.jsonc
