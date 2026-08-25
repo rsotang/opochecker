@@ -324,6 +324,26 @@ def esc(s: str) -> str:
     return html.escape(s, quote=False)
 
 
+WELCOME_TEXT = (
+    "<b>Opochecker</b> - vigilante de oposiciones de facultativos especialistas\n\n"
+    "Vigilo los boletines oficiales de las comunidades autonomas y te aviso aqui cuando "
+    "publican algo sobre <b>oposiciones y concursos de facultativos especialistas</b> "
+    "(medicos especialistas del sistema publico).\n\n"
+    "<b>Comandos:</b>\n"
+    "/backtrack [dias] - Revisa los ultimos dias (30 por defecto) de los boletines por "
+    "anuncios que se hayan escapado (por ejemplo, anteriores a la activacion del bot) y "
+    "te los envia. Tarda unos minutos.\n"
+    "/status - Estado del vigilante (fuentes activas)\n"
+    "/ayuda - Esta ayuda\n\n"
+    "<b>Funciones:</b>\n"
+    "- Aviso automatico de cada documento nuevo que coincida con tus keywords "
+    "(facultativo especialista, medico especialista, licenciado especialista, F.E.A...)\n"
+    "- Sin mensajes duplicados: cada documento se avisa una sola vez\n"
+    "- Los avisos incluyen el titulo del documento y el enlace para verlo\n\n"
+    "Envia /backtrack cuando quieras repasar el historico reciente."
+)
+
+
 # ------------------------------------------------------------- chequeo
 
 PARSERS = {
@@ -601,13 +621,11 @@ def process_commands(cfg: dict):
                           f"<b>Opochecker</b> activo.\n"
                           f"Fuentes activas: {n}\n"
                           f"Comandos: /backtrack [dias], /status, /ayuda")
-        elif cmd in ("/ayuda", "/help", "/start"):
+        elif cmd in ("/ayuda", "/help", "/start") or not cmd.startswith("/"):
+            telegram_send(token, chat_id, WELCOME_TEXT)
+        else:
             telegram_send(token, chat_id,
-                          "<b>Opochecker</b> - avisos de oposiciones de facultativos especialistas.\n\n"
-                          "/backtrack [dias] - revisa los ultimos dias (30 por defecto) por si se "
-                          "escapo algo antes de activar el bot\n"
-                          "/status - estado del vigilante\n"
-                          "/ayuda - esta ayuda")
+                          f"Comando {esc(cmd)} no reconocido. Envia /ayuda para ver los comandos.")
     if max_id:
         telegram_api("getUpdates", token, {"offset": max_id + 1})
 
