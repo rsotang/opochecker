@@ -134,5 +134,69 @@
   "urologia": {
     "nombre": "Urologia",
     "keywords": [["urolog"]]
+  },
+  "radiofisica": {
+    "nombre": "Radiofisica Hospitalaria",
+    "keywords": [["radiofisic"]]
+  },
+  "rehabilitacion": {
+    "nombre": "Medicina Fisica y Rehabilitacion",
+    "keywords": [["rehabilitacion"], ["medicina fisica"]]
+  },
+  "inmunologia": {
+    "nombre": "Inmunologia",
+    "keywords": [["inmunolog"]]
+  },
+  "alergologia": {
+    "nombre": "Alergologia",
+    "keywords": [["alergolog"]]
+  },
+  "legal": {
+    "nombre": "Medicina Legal y Forense",
+    "keywords": [["medicina legal"], ["medicina forense"]]
+  },
+  "deporte": {
+    "nombre": "Medicina del Deporte",
+    "keywords": [["medicina del deporte"]]
+  },
+  "farmacologia": {
+    "nombre": "Farmacologia Clinica",
+    "keywords": [["farmacologia clinica"]]
+  },
+  "estomatologia": {
+    "nombre": "Estomatologia",
+    "keywords": [["estomatolog"]]
+  },
+  "bioquimica": {
+    "nombre": "Bioquimica Clinica",
+    "keywords": [["bioquimica clinica"]]
+  },
+  "analisis": {
+    "nombre": "Analisis Clinicos",
+    "keywords": [["analisis clinicos"]]
+  },
+  "vascular": {
+    "nombre": "Angiologia y Cirugia Vascular",
+    "keywords": [["angiolog"], ["cirugia vascular"]]
+  },
+  "cardiovascular": {
+    "nombre": "Cirugia Cardiovascular",
+    "keywords": [["cirugia cardiovascular"]]
+  },
+  "maxilofacial": {
+    "nombre": "Cirugia Oral y Maxilofacial",
+    "keywords": [["maxilofacial"]]
+  },
+  "pediatrica": {
+    "nombre": "Cirugia Pediatrica",
+    "keywords": [["cirugia pediatrica"]]
+  },
+  "plastica": {
+    "nombre": "Cirugia Plastica, Estetica y Reparadora",
+    "keywords": [["cirugia plastica"]]
+  },
+  "toracica": {
+    "nombre": "Cirugia Toracica",
+    "keywords": [["cirugia toracica"]]
   }
 }

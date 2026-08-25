@@ -773,6 +773,8 @@ def run_check(cfg: dict, verbose: bool = False) -> int:
         for a in new_items[:50]:
             print(f"  - [{a.source.get('ccaa')}] {a.title[:90]}\n    {a.url}")
 
+    process_commands(cfg)
+
     if not new_items:
         return 0
 
@@ -787,7 +789,6 @@ def run_check(cfg: dict, verbose: bool = False) -> int:
             ok_all = False
 
     save_state(state)
-    process_commands(cfg)
     return 0 if ok_all else 1
 
 
