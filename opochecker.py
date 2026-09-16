@@ -4,12 +4,18 @@
 de convocatorias de facultativos especialistas y avisa por Telegram.
 
 Uso:
+  python opochecker.py --serve                Servicio: long polling de Telegram + checks
   python opochecker.py --verify               Probar fuentes sin notificar
   python opochecker.py --test                 Enviar mensaje de prueba a Telegram
   python opochecker.py --check                Ejecutar una comprobacion (avisa novedades)
+  python opochecker.py --poll-once            Procesar los updates de Telegram una vez
   python opochecker.py --install-schedule     Crear tarea en el Programador (cada 30 min)
   python opochecker.py --uninstall-schedule   Eliminar la tarea programada
-  python opochecker.py --loop [--interval N]  Bucle continuo (N minutos, defecto 30)
+  python opochecker.py --loop [--interval N]  Bucle continuo de checks, sin atender Telegram
+
+Solo un proceso puede llamar a getUpdates del mismo bot. En produccion ese proceso es
+'--serve' (el contenedor); no se debe ejecutar --serve dos veces ni dejar un cron que
+llame a getUpdates en paralelo.
 """
 
 import argparse
@@ -18,6 +24,7 @@ import json
 import logging
 import os
 import re
+import signal
 import ssl
 import subprocess
 import sys
@@ -28,25 +35,38 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
+from logging.handlers import RotatingFileHandler
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-STATE_PATH = os.path.join(BASE_DIR, "state.json")
-LOG_PATH = os.path.join(BASE_DIR, "opochecker.log")
-ESPECIALIDADES_PATH = os.path.join(BASE_DIR, "especialidades.json")
-USUARIOS_PATH = os.path.join(BASE_DIR, "usuarios.json")
+# Directorio de datos (estado, usuarios, log). En Docker se monta un volumen en /data.
+DATA_DIR = os.path.abspath(os.environ.get("OPO_DATA_DIR") or BASE_DIR)
+STATE_PATH = os.path.join(DATA_DIR, "state.json")
+LOG_PATH = os.path.join(DATA_DIR, "opochecker.log")
+HEARTBEAT_PATH = os.path.join(DATA_DIR, "heartbeat")
+USUARIOS_PATH = os.path.join(DATA_DIR, "usuarios.json")
 TASK_NAME = "Opochecker"
 STARTUP_VBS = "arrancar_oculto.vbs"
 STARTUP_DIR = os.path.join(os.environ.get("APPDATA", BASE_DIR),
                            "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
+
+def _resolve(name: str, extra: str = None) -> str:
+    """Primer fichero existente: ruta explicita, volumen de datos o junto al script."""
+    for candidate in (extra, os.path.join(DATA_DIR, name), os.path.join(BASE_DIR, name)):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return os.path.join(DATA_DIR, name)
+
+
+CONFIG_PATH = _resolve("config.json", os.environ.get("OPO_CONFIG"))
+ESPECIALIDADES_PATH = _resolve("especialidades.json")
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
 
 log = logging.getLogger("opochecker")
+STOP = False
 
 
 # ---------------------------------------------------------------- utilidades
@@ -284,24 +304,51 @@ def extract_links(base: str, body: str, link_re: str, max_links: int = 400) -> l
 # ------------------------------------------------------------- config
 
 def load_config() -> dict:
-    path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else CONFIG_PATH + ".example"
+    path = CONFIG_PATH
+    if not os.path.exists(path):
+        path = os.path.join(BASE_DIR, "config.json.example")
     with open(path, encoding="utf-8") as f:
         cfg = json.load(f)
     token = cfg.get("telegram", {}).get("bot_token") or os.environ.get("OPO_TELEGRAM_TOKEN", "")
     chat = cfg.get("telegram", {}).get("chat_id") or os.environ.get("OPO_TELEGRAM_CHAT_ID", "")
     cfg["_token"] = token
     cfg["_chat"] = str(chat)
+    cfg.setdefault("access", {"allowed_chats": []})
     return cfg
 
 
-def load_state() -> dict:
+def new_state() -> dict:
+    return {"seen": {}, "telegram_offset": 0, "last_check": ""}
+
+
+def migrate_state(state: dict, owner_chat=None) -> dict:
+    """Normaliza el formato antiguo a memoria por chat.
+
+    Antes: {"seen": {"<url>": "<fecha>"}} (un solo destinatario).
+    Ahora: {"seen": {"<chat_id>": {"<url>": "<fecha>"}}, "telegram_offset": N, ...}
+    """
+    seen = state.get("seen")
+    if not isinstance(seen, dict):
+        seen = {}
+    if seen and not any(isinstance(v, dict) for v in seen.values()):
+        seen = {str(owner_chat if owner_chat is not None else "shared"): seen}
+    state["seen"] = seen
+    state.setdefault("telegram_offset", 0)
+    state.setdefault("last_check", "")
+    return state
+
+
+def load_state(owner_chat=None) -> dict:
+    state = new_state()
     if os.path.exists(STATE_PATH):
         try:
             with open(STATE_PATH, encoding="utf-8") as f:
-                return json.load(f)
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                state.update(loaded)
         except (OSError, ValueError):
             pass
-    return {"seen": {}}
+    return migrate_state(state, owner_chat)
 
 
 def save_state(state: dict):
@@ -342,12 +389,50 @@ def user_settings(data: dict, chat_id) -> dict:
     return data.setdefault(str(chat_id), {"especialidades": [], "extra_keywords": []})
 
 
+def register_user(chat_id) -> bool:
+    """Da de alta el chat si no estaba. Devuelve True si es nuevo."""
+    data = load_usuarios()
+    if str(chat_id) in data:
+        return False
+    user_settings(data, chat_id)
+    save_usuarios(data)
+    log.info("Usuario registrado: %s", chat_id)
+    return True
+
+
+def all_user_chats(cfg: dict) -> list:
+    """Chats a los que notificar: el propietario (config/env) y todos los registrados."""
+    owner = str(cfg.get("_chat") or "")
+    chats = [owner] if owner else []
+    for cid in load_usuarios():
+        if str(cid) not in chats:
+            chats.append(str(cid))
+    return chats
+
+
+def is_allowed(cfg: dict, chat_id) -> bool:
+    """Si config.access.allowed_chats tiene elementos, solo esos chats (y el
+    propietario) pueden usar el bot. Vacio = abierto."""
+    allowed = [str(c) for c in (cfg.get("access", {}) or {}).get("allowed_chats", []) or []]
+    if not allowed:
+        return True
+    return str(chat_id) in allowed or str(chat_id) == str(cfg.get("_chat") or "")
+
+
 def effective_keywords(cfg: dict, chat_id) -> list:
-    """Keywords del chat: base (config) + especialidades seleccionadas + extras del usuario."""
-    kws = [list(g) for g in cfg.get("keywords", [["facultativo", "especialista"]])]
-    esp = load_especialidades()
+    """Keywords del chat: base (config) + especialidades seleccionadas + extras del usuario.
+
+    Las keywords base son las generales del vigilante (facultativo + especialista, etc.).
+    Un usuario puede desactivarlas con /base off para recibir solo lo suyo; si lo hace sin
+    tener especialidades ni extras se mantienen, para no dejarlo sin ningun aviso.
+    """
     data = load_usuarios()
     us = user_settings(data, chat_id)
+    propias = us.get("especialidades") or us.get("extra_keywords")
+    kws = []
+    if us.get("usar_base", True) or not propias:
+        kws = [list(g) for g in cfg.get("keywords", [["facultativo", "especialista"]])]
+    esp = load_especialidades()
     for sid in us.get("especialidades", []):
         for g in esp.get(sid, {}).get("keywords", []):
             kws.append(list(g))
@@ -357,13 +442,13 @@ def effective_keywords(cfg: dict, chat_id) -> list:
 
 # ----------------------------------------------------------- telegram
 
-def telegram_api(method: str, token: str, params: dict = None) -> tuple:
+def telegram_api(method: str, token: str, params: dict = None, timeout: int = 30) -> tuple:
     """Llama a la API de Telegram. Devuelve (json|None, error_descripcion|None)."""
     url = f"https://api.telegram.org/bot{token}/{method}"
     data = urllib.parse.urlencode(params or {}).encode()
     try:
         req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=30, context=CTX) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
             return json.loads(r.read().decode("utf-8", "replace")), None
     except urllib.error.HTTPError as e:
         try:
@@ -458,10 +543,12 @@ def specialty_keyboard(esp: dict, sel: list) -> str:
 def keywords_report(cfg: dict, chat_id) -> str:
     esp = load_especialidades()
     us = user_settings(load_usuarios(), chat_id)
+    usar_base = us.get("usar_base", True)
     lines = ["<b>Tus keywords</b> (un anuncio se avisa si cumple todas las de un grupo):\n"]
-    lines.append("<b>Base:</b>")
-    for i, g in enumerate(cfg.get("keywords", []), 1):
-        lines.append(f"  {i}. {keyword_text(g)}")
+    lines.append("<b>Base:</b>" + ("" if usar_base else "  DESACTIVADAS (/base on para volver)"))
+    if usar_base:
+        for i, g in enumerate(cfg.get("keywords", []), 1):
+            lines.append(f"  {i}. {keyword_text(g)}")
     sel = us.get("especialidades", [])
     if sel:
         lines.append("\n<b>Especialidades activas:</b>")
@@ -477,7 +564,29 @@ def keywords_report(cfg: dict, chat_id) -> str:
         for i, g in enumerate(extra, 1):
             lines.append(f"  {i}. {keyword_text(g)}  (/delkw {i})")
     lines.append("\nEditar extras: /addkw termino1 termino2 ...  |  /resetkw")
+    lines.append("Keywords base: /base on | /base off")
     return "\n".join(lines)
+
+
+def set_base_keywords(chat_id, arg: str) -> str:
+    """Activa o desactiva las keywords base (generales) para este chat."""
+    data = load_usuarios()
+    us = user_settings(data, chat_id)
+    arg = (arg or "").strip().lower()
+    if arg in ("on", "si", "1"):
+        us["usar_base"] = True
+    elif arg in ("off", "no", "0"):
+        if not (us.get("especialidades") or us.get("extra_keywords")):
+            return ("No puedes desactivar las keywords base sin tener antes alguna especialidad "
+                    "o keyword propia: te quedarias sin ningun aviso. Usa /especialidades o /addkw.")
+        us["usar_base"] = False
+    else:
+        estado = "activadas" if us.get("usar_base", True) else "desactivadas"
+        return (f"Keywords base: <b>{estado}</b>.\n"
+                f"Uso: /base on | /base off\n"
+                f"Con las base desactivadas solo recibiras las de tus especialidades y tus extras.")
+    save_usuarios(data)
+    return f"Keywords base <b>{'activadas' if us['usar_base'] else 'desactivadas'}</b>."
 
 
 def set_specialty(chat_id, sid: str, active: bool) -> str:
@@ -537,7 +646,14 @@ def handle_update(upd: dict, cfg: dict, token: str) -> bool:
         chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
         msg_id = (cb.get("message") or {}).get("message_id")
         cb_id = cb.get("id", "")
-        if data.startswith("esp:") and chat_id is not None:
+        if chat_id is None:
+            return False
+        if not is_allowed(cfg, chat_id):
+            log.info("Callback ignorado de chat no autorizado: %s", chat_id)
+            telegram_answer(token, cb_id, "No autorizado")
+            return True
+        register_user(chat_id)
+        if data.startswith("esp:"):
             sid = data[4:]
             active = sid not in user_settings(load_usuarios(), chat_id)["especialidades"]
             texto = set_specialty(chat_id, sid, active)
@@ -555,6 +671,10 @@ def handle_update(upd: dict, cfg: dict, token: str) -> bool:
     chat_id = (msg.get("chat") or {}).get("id")
     if not text or chat_id is None:
         return False
+    if not is_allowed(cfg, chat_id):
+        log.info("Mensaje ignorado de chat no autorizado: %s", chat_id)
+        return True
+    register_user(chat_id)
     cmd, _, arg = text.partition(" ")
     cmd = cmd.lower()
     log.info("Comando recibido: %s (chat %s)", cmd, chat_id)
@@ -567,7 +687,7 @@ def handle_update(upd: dict, cfg: dict, token: str) -> bool:
         telegram_send(token, chat_id,
                       f"Revisando los ultimos <b>{days} dias</b> de boletines "
                       f"(tarda unos minutos)...")
-        items = run_backtrack(cfg, days, send_to=chat_id)
+        items = run_backtrack(cfg, days, chat_id=chat_id)
         log.info("/backtrack: %d coincidencias enviadas", len(items))
         return True
 
@@ -604,12 +724,18 @@ def handle_update(upd: dict, cfg: dict, token: str) -> bool:
         telegram_send(token, chat_id, reset_extra_keywords(chat_id))
         return True
 
+    if cmd == "/base":
+        telegram_send(token, chat_id, set_base_keywords(chat_id, arg))
+        return True
+
     if cmd == "/status":
         n = len([s for s in cfg.get("sources", []) if s.get("enabled", True)])
         telegram_send(token, chat_id,
                       f"<b>Opochecker</b> activo.\n"
                       f"Fuentes activas: {n}\n"
-                      f"Comandos: /backtrack [dias], /especialidades, /keywords, /status, /ayuda")
+                      f"Usuarios suscritos: {len(all_user_chats(cfg))}\n"
+                      f"Comandos: /backtrack [dias], /especialidades, /keywords, /base, "
+                      f"/status, /ayuda")
         return True
 
     if cmd in ("/ayuda", "/help", "/start") or not cmd.startswith("/"):
@@ -621,26 +747,88 @@ def handle_update(upd: dict, cfg: dict, token: str) -> bool:
     return True
 
 
-def process_commands(cfg: dict):
-    """Procesa updates pendientes del bot (getUpdates). Se ejecuta en cada --check."""
+def poll_telegram(cfg: dict, timeout: int = 25) -> int:
+    """Una vuelta de getUpdates (long polling si timeout > 0).
+
+    El offset se confirma y se guarda en disco ANTES de ejecutar cada comando: asi un
+    reinicio a mitad de un comando largo (/backtrack) no lo reproduce al arrancar.
+    Devuelve el numero de updates atendidos.
+    """
     token = cfg["_token"]
     if not token:
-        return
-    ok, err = telegram_api("getUpdates", token, {"timeout": 0})
+        return 0
+    state = load_state(cfg.get("_chat"))
+    offset = int(state.get("telegram_offset") or 0)
+    ok, err = telegram_api("getUpdates", token, {
+        "offset": offset,
+        "timeout": timeout,
+        "limit": 20,
+        "allowed_updates": json.dumps(["message", "callback_query"]),
+    }, timeout=timeout + 15)
     if not ok:
-        return
-    updates = ok.get("result", [])
-    if not updates:
-        return
-    max_id = 0
-    for upd in updates:
-        max_id = max(max_id, upd.get("update_id", 0))
+        log.warning("getUpdates: %s", err)
+        return 0
+
+    atendidos = 0
+    for upd in ok.get("result") or []:
+        state["telegram_offset"] = int(upd.get("update_id", 0)) + 1
+        save_state(state)
         try:
-            handle_update(upd, cfg, token)
+            if handle_update(upd, cfg, token):
+                atendidos += 1
         except Exception as e:
             log.error("Error procesando update: %s", e)
-    if max_id:
-        telegram_api("getUpdates", token, {"offset": max_id + 1})
+    return atendidos
+
+
+def touch_heartbeat():
+    """Marca de vida para el HEALTHCHECK del contenedor."""
+    try:
+        with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
+            f.write(datetime.now().isoformat(timespec="seconds"))
+    except OSError as e:
+        log.warning("No se pudo escribir el heartbeat: %s", e)
+
+
+def seconds_until_check(state: dict, interval: int) -> float:
+    """Segundos que faltan para la siguiente comprobacion (0 si ya toca)."""
+    last = state.get("last_check") or ""
+    if not last:
+        return 0.0
+    try:
+        transcurrido = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+    except ValueError:
+        return 0.0
+    return max(0.0, interval * 60 - transcurrido)
+
+
+def serve(cfg: dict, interval: int, poll_timeout: int = 25):
+    """Servicio: long polling continuo de Telegram + comprobacion cada `interval` min."""
+    interval = max(1, int(interval))  # con 0 cada vuelta del bucle martillearia las fuentes
+    poll_timeout = max(0, min(int(poll_timeout), 50))
+    owner = cfg.get("_chat")
+    if owner:
+        register_user(owner)
+    log.info("Servicio iniciado: checks cada %d min, long polling de %ds, datos en %s",
+             interval, poll_timeout, DATA_DIR)
+    proximo = time.time() + seconds_until_check(load_state(owner), interval)
+    while not STOP:
+        touch_heartbeat()
+        try:
+            poll_telegram(cfg, poll_timeout)
+        except Exception as e:
+            log.exception("Error en el long polling: %s", e)
+            time.sleep(5)
+        if time.time() >= proximo:
+            try:
+                run_check(cfg)
+            except Exception as e:
+                log.exception("Error en la comprobacion: %s", e)
+            state = load_state(owner)
+            state["last_check"] = datetime.now().isoformat(timespec="seconds")
+            save_state(state)
+            proximo = time.time() + interval * 60
+    log.info("Servicio detenido")
 
 
 WELCOME_TEXT = (
@@ -652,6 +840,8 @@ WELCOME_TEXT = (
     "/especialidades - Elige que especialidades vigilar (medicina, cardiologia, "
     "pediatria...): toca los botones para activarlas y veras sus keywords\n"
     "/keywords - Muestra tus keywords y las de tus especialidades\n"
+    "/base on|off - Activa o desactiva las keywords generales (facultativo + especialista); "
+    "con 'off' recibes solo lo de tus especialidades\n"
     "/addkw termino1 termino2 - Anade tu propia keyword (grupo: deben cumplirse TODOS "
     "los terminos)\n"
     "/delkw numero - Elimina una keyword anadida por ti\n"
@@ -742,54 +932,66 @@ def fetch_source(src: dict) -> list:
     return out
 
 
-def run_check(cfg: dict, verbose: bool = False) -> int:
-    state = load_state()
-    seen = state.setdefault("seen", {})
-    keywords = effective_keywords(cfg, cfg["_chat"])
-    new_items = []
+def collect_announcements(cfg: dict, verbose: bool = False) -> tuple:
+    """Descarga todas las fuentes activas. Devuelve (anuncios, fuentes_ok, fuentes_total).
 
+    No filtra por keywords: las fuentes se descargan una sola vez y el filtrado se hace
+    despues por usuario (cada uno tiene sus especialidades y extras).
+    """
+    items, ok, total = [], 0, 0
     for src in cfg.get("sources", []):
         if not src.get("enabled", True):
             continue
+        total += 1
         name = f"{src.get('ccaa')} ({src.get('boletin')})"
         try:
             anns = fetch_source(src)
+            ok += 1
             log.info("%s: %d anuncios", name, len(anns))
-            for a in anns:
-                if not a.title:
-                    continue
-                if not is_match(a.title, a.url, keywords):
-                    continue
-                if a.key in seen:
-                    continue
-                new_items.append(a)
+            items.extend(a for a in anns if a.title)
         except Exception as e:
             log.error("%s: ERROR -> %s", name, e)
             if verbose:
                 print(f"  [ERROR] {name}: {e}")
+    return items, ok, total
+
+
+def run_check(cfg: dict, verbose: bool = False) -> int:
+    """Comprueba las fuentes y avisa a cada usuario de las novedades que cumplan SUS keywords."""
+    state = load_state(cfg.get("_chat"))
+    seen = state["seen"]
+    items, ok_src, total_src = collect_announcements(cfg, verbose)
+    chats = all_user_chats(cfg)
 
     if verbose:
-        print(f"\nNovedades detectadas: {len(new_items)}")
-        for a in new_items[:50]:
-            print(f"  - [{a.source.get('ccaa')}] {a.title[:90]}\n    {a.url}")
+        print(f"\nAnuncios recogidos: {len(items)}  (fuentes ok: {ok_src}/{total_src})")
+        print(f"Usuarios a notificar: {len(chats)}")
 
-    process_commands(cfg)
+    novedades = 0
+    for chat in chats:
+        kws = effective_keywords(cfg, chat)
+        pend = [a for a in items
+                if is_match(a.title, a.url, kws) and a.key not in seen.get(chat, {})]
+        if not pend:
+            continue
+        log.info("Chat %s: %d novedades", chat, len(pend))
+        if verbose:
+            for a in pend[:50]:
+                print(f"  - [{a.source.get('ccaa')}][chat {chat}] {a.title[:90]}\n    {a.url}")
+        for a in pend:
+            msg = (f"<b>{esc(a.source.get('ccaa'))}</b> - {esc(a.source.get('boletin'))}\n"
+                   f"{esc(a.title)}\n<a href=\"{html.escape(a.url, quote=True)}\">ver documento</a>")
+            if telegram_send(cfg["_token"], chat, msg):
+                seen.setdefault(chat, {})[a.key] = datetime.now().isoformat(timespec="seconds")
+                save_state(state)  # incremental: un corte a media tanda no reenvia avisos
+                novedades += 1
 
-    if not new_items:
-        return 0
-
-    token, chat = cfg["_token"], cfg["_chat"]
-    ok_all = True
-    for a in new_items:
-        msg = (f"<b>{esc(a.source.get('ccaa'))}</b> - {esc(a.source.get('boletin'))}\n"
-               f"{esc(a.title)}\n<a href=\"{html.escape(a.url, quote=True)}\">ver documento</a>")
-        if telegram_send(token, chat, msg):
-            seen[a.key] = datetime.now().isoformat(timespec="seconds")
-        else:
-            ok_all = False
-
-    save_state(state)
-    return 0 if ok_all else 1
+    if verbose:
+        print(f"Novedades notificadas: {novedades}")
+    if total_src and not ok_src:
+        log.error("Ninguna de las %d fuentes activas respondio", total_src)
+        return 1
+    return 0
 
 
 # ------------------------------------------------------------ retroceso
@@ -834,23 +1036,25 @@ def bt_walk_bon(limit: date) -> list:
 
 def bt_walk_canarias(limit: date) -> list:
     """Canarias: archivo anual (numero | fecha ISO en title) -> boletin del numero."""
-    body = http_get("https://www.gobiernodecanarias.org/boc/archivo/2026/")
     out = []
-    for href, iso in re.findall(
-            r'<a\s+href="(/boc/\d{4}/\d+/index\.html)"[^>]*?title="[^"]*\((\d{4}-\d{2}-\d{2})\)"', body):
-        d = datetime.strptime(iso, "%Y-%m-%d").date()
-        if d < limit:
-            continue
-        page = http_get(abs_url("https://www.gobiernodecanarias.org", href))
-        out.extend(parse_canarias(page))
+    href_re = (r'<a\s+href="(/boc/\d{4}/\d+/index\.html)"[^>]*?title="[^"]*'
+               r'\((\d{4}-\d{2}-\d{2})\)"')
+    for year in range(limit.year, date.today().year + 1):
+        body = http_get(f"https://www.gobiernodecanarias.org/boc/archivo/{year}/")
+        for href, iso in re.findall(href_re, body):
+            d = datetime.strptime(iso, "%Y-%m-%d").date()
+            if d < limit:
+                continue
+            page = http_get(abs_url("https://www.gobiernodecanarias.org", href))
+            out.extend(parse_canarias(page))
     return out
 
 
-def bt_collect(cfg: dict, days: int) -> list:
+def bt_collect(cfg: dict, days: int, chat_id=None) -> list:
     """Recoge de las fuentes con historico los anuncios de los ultimos `days` dias."""
-    limit = date.today() - timedelta(days=days)
-    keywords = effective_keywords(cfg, cfg["_chat"])
-    seen = load_state().setdefault("seen", {})
+    chat_id = chat_id or cfg.get("_chat")
+    keywords = effective_keywords(cfg, chat_id)
+    seen = load_state(cfg.get("_chat"))["seen"].get(str(chat_id), {})
     found = []
 
     for src in cfg.get("backtrack", []):
@@ -887,12 +1091,12 @@ def bt_collect(cfg: dict, days: int) -> list:
     return found
 
 
-def bt_send(cfg: dict, items: list, days: int, send_to: str = None) -> int:
+def bt_send(cfg: dict, items: list, days: int, chat_id=None) -> int:
     """Envia los resultados del retroceso agrupados por CCAA y los marca como vistos."""
-    state = load_state()
-    seen = state.setdefault("seen", {})
+    state = load_state(cfg.get("_chat"))
+    chat = str(chat_id or cfg.get("_chat") or "")
+    seen = state["seen"].setdefault(chat, {})
     token = cfg["_token"]
-    chat = send_to or cfg["_chat"]
     by_src = {}
     for a in items:
         by_src.setdefault((a.source.get("ccaa"), a.source.get("boletin")), []).append(a)
@@ -918,29 +1122,39 @@ def bt_send(cfg: dict, items: list, days: int, send_to: str = None) -> int:
     return sent
 
 
-def run_backtrack(cfg: dict, days: int = 30, dry_run: bool = False,
-                  send_to: str = None) -> list:
-    items = bt_collect(cfg, days)
+def run_backtrack(cfg: dict, days: int = 30, chat_id=None, dry_run: bool = False) -> list:
+    items = bt_collect(cfg, days, chat_id)
     if dry_run:
         return items
-    bt_send(cfg, items, days, send_to)
+    bt_send(cfg, items, days, chat_id)
     return items
+
+
+def _on_stop(signum, frame):
+    global STOP
+    STOP = True
+    log.info("Senal %s recibida: parando el servicio", signum)
 
 
 # ----------------------------------------------------------- CLI
 
 def main():
     ap = argparse.ArgumentParser(description="Vigilante de oposiciones de facultativos especialistas")
+    ap.add_argument("--serve", action="store_true",
+                    help="servicio: long polling de Telegram + comprobacion periodica")
     ap.add_argument("--verify", action="store_true", help="probar fuentes sin enviar Telegram")
     ap.add_argument("--test", action="store_true", help="enviar mensaje de prueba a Telegram")
     ap.add_argument("--check", action="store_true", help="ejecutar comprobacion y notificar novedades")
+    ap.add_argument("--poll-once", action="store_true",
+                    help="procesar los updates pendientes de Telegram y salir")
     ap.add_argument("--backtrack", action="store_true",
                     help="revisar los ultimos N dias de boletines por anuncios no notificados")
     ap.add_argument("--days", type=int, default=30, help="dias a revisar en --backtrack (defecto 30)")
     ap.add_argument("--dry-run", action="store_true",
                     help="con --backtrack: mostrar resultados sin enviarlos por Telegram")
-    ap.add_argument("--loop", action="store_true", help="bucle continuo")
-    ap.add_argument("--interval", type=int, default=30, help="minutos entre comprobaciones (defecto 30)")
+    ap.add_argument("--loop", action="store_true", help="bucle continuo de checks, sin atender Telegram")
+    ap.add_argument("--interval", type=int, default=10,
+                    help="minutos entre comprobaciones (defecto 10)")
     ap.add_argument("--install-schedule", action="store_true", help="crear tarea cada 30 min (Programador)")
     ap.add_argument("--uninstall-schedule", action="store_true", help="eliminar la tarea del Programador")
     ap.add_argument("--install-startup", action="store_true",
@@ -954,7 +1168,8 @@ def main():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        handlers=[RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3,
+                                      encoding="utf-8"),
                   logging.StreamHandler(sys.stdout)],
     )
 
@@ -1033,8 +1248,18 @@ def main():
         print(telegram_test(cfg["_token"], cfg["_chat"]))
         sys.exit(0)
 
+    if args.poll_once:
+        print(f"Updates atendidos: {poll_telegram(cfg, timeout=0)}")
+        return
+
+    if args.serve:
+        signal.signal(signal.SIGTERM, _on_stop)
+        signal.signal(signal.SIGINT, _on_stop)
+        serve(cfg, args.interval)
+        return
+
     if args.backtrack:
-        items = run_backtrack(cfg, args.days, dry_run=args.dry_run)
+        items = run_backtrack(cfg, args.days, chat_id=cfg["_chat"], dry_run=args.dry_run)
         print(f"\nRetroceso de {args.days} dias: {len(items)} coincidencias")
         for a in items[:80]:
             print(f"  - [{a.source.get('ccaa')}] {a.title[:90]}\n    {a.url}")
@@ -1046,7 +1271,7 @@ def main():
                 run_check(cfg)
             except Exception as e:
                 log.exception("Error en la comprobacion: %s", e)
-            time.sleep(args.interval * 60)
+            time.sleep(max(1, args.interval) * 60)
         return
 
     sys.exit(run_check(cfg, verbose=True))

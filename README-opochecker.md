@@ -4,17 +4,20 @@ Vigilante de los **boletines oficiales de las comunidades autonomas espanolas** 
 documentos sobre **oposiciones/concursos de facultativos especialistas** (medicos especialistas
 del sistema sanitario publico). Cuando aparece algo nuevo, envia un aviso a **Telegram**.
 
-Python puro (solo stdlib), sin dependencias que instalar. Funciona en Windows.
+Python puro (solo stdlib), sin dependencias que instalar. Funciona en Windows y en
+Linux/Docker (servicio 24/7 recomendado, ver [Donde ejecutarlo](#donde-ejecutarlo)).
 
 ## Como funciona
 
-- Cada ejecucion consulta 11 fuentes oficiales (boletines con RSS o paginas de sumario del dia).
-- Extrae los anuncios, los filtra con las palabras clave de `config.json` (busca "facultativo
-  especialista", "licenciado/a especialista", "medico especialista", "F.E.A.", etc., ignorando
-  acentos y mayusculas).
-- Compara con `state.json` para no repetir avisos (memoria de lo ya notificado).
+- El servicio (`--serve`) escucha Telegram en continuo (long polling): los comandos se
+  atienden al instante, no en la siguiente pasada.
+- Cada 10 minutos consulta las fuentes activas de `config.json` (RSS o paginas de sumario
+  del dia) y extrae los anuncios.
+- Filtra por usuario: cada chat tiene sus keywords (base + especialidades + extras) y solo
+  recibe lo que cumple las suyas.
+- Compara con `state.json` (memoria por chat) para no repetir avisos.
 - Cada documento nuevo se envia como mensaje de Telegram con titulo y enlace.
-- Un log queda en `opochecker.log`.
+- El log rota solo (5 MB x 3) en el directorio de datos: `opochecker.log`.
 
 ## Fuentes cubiertas (activas)
 
@@ -80,13 +83,14 @@ python opochecker.py --check        REM comprueba y avisa por Telegram de noveda
 
 ## Comandos del bot (por Telegram)
 
-Escribe estos comandos en el chat con tu bot (se procesan en la siguiente ejecucion
-programada, como mucho 30 minutos despues):
+Escribe estos comandos en el chat con tu bot (se atienden al instante: el servicio escucha
+Telegram en continuo):
 
 | Comando | Que hace |
 |---------|----------|
 | `/especialidades` | **Selector de especialidades**: envia la lista de 34 especialidades medicas y facultativas con botones para activar/desactivar cada una. Al pulsar un boton se muestra la keyword asociada (cardiologia -> "cardiolog", pediatria -> "pediatr", anestesiologia -> "anestesio", etc.). Las especialidades activas se suman a la monitorizacion |
 | `/keywords` | Muestra las keywords base, las de tus especialidades activas y las tuyas anadidas |
+| `/base on\|off` | Activa o desactiva las keywords base (las generales: "facultativo + especialista", etc.). Con `off` solo recibes lo de tus especialidades y extras, util si te interesa una especialidad concreta. No deja desactivarlas si no tienes ninguna propia (te quedarias sin avisos) |
 | `/addkw termino1 termino2` | Anade tu propia keyword: un grupo donde el anuncio debe contener TODOS los terminos |
 | `/delkw numero` | Elimina una keyword anadida por ti (usa /keywords para ver los numeros) |
 | `/resetkw` | Borra todas tus keywords anadidas |
@@ -103,60 +107,95 @@ fecha o archivo: BOCyL, DOE, BOPA, BON y BOC-Canarias. El resto (BOCM, BOPV, DOG
 BOJA) se vigilan en tiempo real desde que el bot esta activo, pero no tienen acceso
 historico sencillo para el retroceso.
 
-## Programar cada 30 minutos
+## Donde ejecutarlo
 
-Tienes dos opciones:
+### Opcion A (recomendada): tu servidor con Docker
 
-### Opcion A (recomendada): Programador de tareas de Windows
+El servicio corre 24/7 en el servidor: atiende Telegram al instante (long polling) y revisa
+los boletines cada 10 minutos. No depende de tu PC ni de GitHub.
 
-```bat
-python opochecker.py --install-schedule
+```text
+/opt/docker/stacks/opochecker/     <- clon del repositorio
+    compose.yaml
+    Dockerfile
+    .env                           <- token y chat_id (no se sube a git)
+    data/                          <- estado, usuarios y log (volumen, no se sube a git)
 ```
 
-Crea la tarea "Opochecker" que ejecuta `--check` cada 30 minutos, incluso sin sesion abierta.
-Para desinstalarla: `python opochecker.py --uninstall-schedule`.
+Puesta en marcha (una sola vez):
 
-### Opcion B: sin Programador de tareas (arranque oculto al iniciar sesion)
+```bash
+ssh rsa@rsa-servidor
+git clone https://github.com/rsotang/opochecker.git /opt/docker/stacks/opochecker
+cd /opt/docker/stacks/opochecker
+mkdir -p data
+cp .env.example .env && nano .env        # rellena token y chat_id
+cp state.json usuarios.json data/        # conserva la memoria de avisos ya enviados
+docker compose up -d --build
+docker compose logs -f
+```
+
+El contenedor arranca con `restart: unless-stopped`, asi que se levanta solo al reiniciar el
+servidor. El `HEALTHCHECK` vigila el bucle de servicio (fichero `data/heartbeat`): si el long
+polling se cuelga, `docker ps` lo marca como `unhealthy` y el contenedor se reinicia; tambien
+lo puedes vigilar desde uptime-kuma.
+
+Actualizar el codigo:
+
+```bash
+cd /opt/docker/stacks/opochecker
+git pull
+docker compose up -d --build
+```
+
+Datos y secretos:
+- `data/state.json`: memoria de lo ya notificado, por chat (el formato antiguo se migra solo).
+- `data/usuarios.json`: especialidades, keywords extras y ajustes de cada usuario.
+- `.env`: token y chat_id. Equivalen a `telegram.bot_token` y `telegram.chat_id` del
+  `config.json`; si el fichero los deja vacios, mandan las variables de entorno.
+- Para editar fuentes o keywords en el servidor sin recompilar: copia `config.json.example`
+  a `config.json` en la carpeta del stack y descomenta el volumen correspondiente en
+  `compose.yaml`.
+- Acceso: por defecto **cualquiera que encuentre el bot** puede suscribirse. Para cerrarlo,
+  anade `"access": {"allowed_chats": ["<tu_chat_id>"]}` a `config.json` (o al `config.json`
+  montado); si la lista esta vacia, no hay restriccion.
+
+Importante: **solo un proceso puede llamar a `getUpdates` del mismo bot**. En produccion es
+este contenedor (`--serve`). No dejes a la vez un cron en Windows o el flujo de GitHub
+llamando al bot, o se robaran comandos entre ellos.
+
+### Opcion B: tu PC con Windows (respaldo)
+
+```bat
+python opochecker.py --install-schedule      REM tarea cada 30 min (Programador de tareas)
+python opochecker.py --uninstall-schedule
+```
+
+La tarea programada ejecuta `--check`: revisa boletines y avisa, pero **no atiende comandos**
+(para eso esta `--serve`, en una sola instancia).
+
+O, sin Programador, arranque oculto al iniciar sesion:
 
 ```bat
 python opochecker.py --install-startup
+python opochecker.py --uninstall-startup
 ```
 
-Copia `arrancar_oculto.vbs` a la carpeta de Inicio de Windows: cada vez que inicies sesion
-se lanza el vigilante en segundo plano, **sin ventana** (usa `pythonw`), comprobando cada
-30 minutos. Para quitarlo: `python opochecker.py --uninstall-startup`.
-
-Tambien puedes arrancarlo tu mismo cuando quieras:
-- Con ventana visible: `python opochecker.py --loop --interval 30`
+Tambien puedes arrancarlo a mano:
+- Atendiendo Telegram: `python opochecker.py --serve`
+- Solo checks, sin atender Telegram: `python opochecker.py --loop --interval 30`
 - Sin ventana: doble clic en `arrancar_oculto.vbs`
 
-Nota: la Opcion B solo funciona mientras tu sesion de Windows esta iniciada. Si apagas el
-equipo, se reanuda al iniciar sesion. La Opcion A es la que funciona con el equipo cerrado
-sesion pero encendido.
+Nota: `--loop` no contesta comandos a proposito, para que no haya dos procesos hablando con
+Telegram. Si el PC es tu unica instancia, usa `--serve`.
 
-### Opcion C: sin usar tu PC (GitHub Actions, gratis)
+### Opcion C: GitHub Actions (descartada)
 
-El vigilante puede correr en los servidores de GitHub cada 30 minutos, sin depender de
-ningun equipo tuyo. Ya esta preparado el flujo en `.github/workflows/opochecker.yml`.
-
-1. Crea un repositorio en GitHub (recomendado: **publico** — las Actions son ilimitadas
-   en repos publicos; en privados hay 2.000 minutos/mes de cortesia).
-2. Sube todos los archivos de esta carpeta **menos** `config.json` (contiene tu token; ya
-   esta en `.gitignore` y se usa `config.json.example` en su lugar).
-3. En el repositorio: **Settings -> Secrets and variables -> Actions -> New repository secret**:
-   - `OPO_TELEGRAM_TOKEN` = tu token de Telegram
-   - `OPO_TELEGRAM_CHAT_ID` = tu chat_id (numero)
-4. Ejecuta la primera comprobacion manual: pestaña **Actions -> Opochecker -> Run workflow**.
-   Comprueba que el aviso llega a Telegram.
-5. Desde entonces el flujo se ejecuta solo cada 30 minutos. La memoria de avisos ya enviados
-   (`state.json`) se guarda en el propio repositorio, asi que no se repiten.
-
-Notas:
-- El horario usa la zona `Europe/Madrid` (configurada en el flujo), asi que los boletines
-  diarios se consultan en su fecha correcta.
-- GitHub puede retrasar o saltarse la ejecucion programada si el repositorio lleva mucho
-  tiempo inactivo. Si quieres garantia total, el "Run workflow" manual siempre funciona.
-- El token y el chat_id viajan como secrets, nunca se suben al repositorio.
+Se uso al principio, pero GitHub descarta la mayoria de las ejecuciones programadas: con
+`cron: */10` solo se ejecutaron **48 de 1008** en una semana (~4,8%), de modo que un comando
+de Telegram tardaba de media ~3,5 h en atenderse. Por eso
+`.github/workflows/opochecker.yml` ya **no tiene `schedule`**: queda como diagnostico manual
+(`--verify`, solo lectura) para detectar que un boletin ha cambiado su HTML.
 
 ## Ajustar las palabras clave
 
@@ -174,16 +213,23 @@ palabras de algun grupo aparecen en su titulo o enlace (sin acentos):
 Para afinar a tu especialidad, anade grupos mas concretos, por ejemplo:
 `["facultativo", "anestesio"]`, `["especialista", "cardiologia"]`.
 
+Estos grupos son la **base**: se aplican a todos los usuarios. Cada usuario anade encima lo
+suyo (`/especialidades`, `/addkw`) y puede excluir la base con `/base off` para recibir solo
+lo de sus especialidades.
+
 ## Solucion de problemas
 
-- **"Telegram no configurado"**: falta token o chat_id en `config.json`.
+- **"Telegram no configurado"**: falta token o chat_id (`.env`, variables de entorno o `config.json`).
 - **"chat_id no valido"**: el chat_id se consigue con `getUpdates` despues de haber enviado
   al bot un mensaje; si tu cuenta usa nombre de usuario, el chat_id aparece como numero negativo.
+- **El bot no contesta a los comandos**: comprueba que solo hay un proceso llamando a Telegram
+  (`docker compose logs -f` en el servidor). Dos instancias (servidor + cron en Windows, por
+  ejemplo) se roban los updates entre ellas.
 - **Un boletin da error en `--verify`**: puede ser temporal (el boletin no publica ese dia o el
   servidor esta caido). Vuelve a ejecutar `--verify` mas tarde. El registro de cada fallo queda
-  en `opochecker.log`.
-- **Quieres dejar de recibir avisos de algo ya notificado**: borra `state.json` y ejecuta
-  `--check` (no volvera a avisar de lo ya visto; solo de lo nuevo).
+  en `opochecker.log` (dentro de `data/`).
+- **Quieres dejar de recibir avisos de algo ya notificado**: por chat, `/resetkw` y ajusta
+  especialidades. A nivel global, edita `data/state.json` y ejecuta `--check`.
 
 ## Archivos
 
@@ -191,9 +237,14 @@ Para afinar a tu especialidad, anade grupos mas concretos, por ejemplo:
 |---------|-----------|
 | `opochecker.py` | El vigilante (script principal) |
 | `setup_telegram.py` | Asistente que valida token/chat_id y los guarda |
+| `Dockerfile` | Imagen del servicio (Python 3.13 + tzdata, sin dependencias pip) |
+| `compose.yaml` | Stack de Docker Compose (servicio `opochecker`) |
+| `.env.example` | Plantilla de `.env` con token y chat_id |
 | `config.json` | Telegram, palabras clave y fuentes (**NO subir a GitHub**) |
 | `config.json.example` | Copia sin token, para subir a GitHub |
 | `arrancar_oculto.vbs` | Lanzador sin ventana (doble clic o Inicio de Windows) |
-| `.github/workflows/opochecker.yml` | Ejecucion cada 30 min en GitHub Actions |
-| `state.json` | Memoria de documentos ya notificados (se genera solo) |
-| `opochecker.log` | Registro de ejecuciones |
+| `.github/workflows/opochecker.yml` | Diagnostico manual (`--verify`); el `schedule` esta desactivado |
+| `data/state.json` | Memoria de documentos ya notificados, por chat (se genera solo) |
+| `data/usuarios.json` | Especialidades, keywords y ajustes de cada usuario |
+| `data/opochecker.log` | Registro de ejecuciones (rota a los 5 MB, 3 copias) |
+| `data/heartbeat` | Marca de vida del servicio (la usa el `HEALTHCHECK`) |

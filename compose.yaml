@@ -1,0 +1,24 @@
+services:
+  opochecker:
+    build: .
+    image: opochecker:latest
+    container_name: opochecker
+    restart: unless-stopped
+    # El SIGTERM se atiende entre dos long polls (<= 25 s); 40 s evita un SIGKILL.
+    stop_grace_period: 40s
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Madrid
+      OPO_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+      # Para editar fuentes/keywords en el servidor sin recompilar la imagen:
+      # copia config.json.example a ./config.json, ajustalo y descomenta la linea.
+      # El token y el chat_id siguen tomandose de .env (vacio en el fichero = env).
+      # - ./config.json:/data/config.json:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
