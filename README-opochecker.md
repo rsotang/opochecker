@@ -197,6 +197,39 @@ de Telegram tardaba de media ~3,5 h en atenderse. Por eso
 `.github/workflows/opochecker.yml` ya **no tiene `schedule`**: queda como diagnostico manual
 (`--verify`, solo lectura) para detectar que un boletin ha cambiado su HTML.
 
+## Monitorizacion (opcional)
+
+El servicio se puede vigilar con uptime-kuma (o cualquier herramienta con monitores "push"):
+`monitor/opochecker-check.sh` comprueba cada 5 minutos el contenedor, el heartbeat del
+servicio y `last_check`, y publica el resultado en un monitor Push. Si el bot deja de
+funcionar, kuma avisa por Telegram.
+
+```bash
+# en el servidor, dentro del clon del repositorio
+cp monitor/opochecker-check.sh /home/rsa/opochecker-check.sh
+chmod 750 /home/rsa/opochecker-check.sh
+cat > /home/rsa/.opochecker-monitor.env <<'EOF'
+OPOCHECKER_PUSH_TOKEN=<token del monitor Push de kuma>
+#OPOCHECKER_EXTERNO=https://hc-ping.com/<uuid>      # vigilante externo (opcional)
+EOF
+chmod 600 /home/rsa/.opochecker-monitor.env
+crontab -e     # */5 * * * * /home/rsa/opochecker-check.sh >/dev/null 2>&1
+```
+
+El token del monitor **no se versiona**: va en `~/.opochecker-monitor.env` porque es una
+credencial de escritura del monitor (con el repo publico, cualquiera podria falsear tus
+heartbeats). Variables que admite el script: `OPOCHECKER_PUSH_BASE` (por defecto
+`http://127.0.0.1:3001/api/push`), `OPOCHECKER_PUSH_TOKEN`, `OPOCHECKER_EXTERNO`,
+`OPOCHECKER_DATA` y `OPOCHECKER_CONT`.
+
+Notas:
+- `OPOCHECKER_EXTERNO` es para un dead-man's switch externo (healthchecks.io y similares):
+  kuma vive en el mismo servidor, asi que no puede avisarte si se cae el servidor entero.
+- Si el contenedor esta `unhealthy` y el heartbeat lleva mas de 10 minutos parado, el script
+  reinicia el contenedor (maximo una vez cada 15 minutos).
+- Un boletin que devuelve error **no** baja el monitor: aparece como `errores_log=N` en el
+  mensaje del heartbeat, para no inundar de falsos positivos.
+
 ## Ajustar las palabras clave
 
 En `config.json`, `keywords` es una lista de grupos. Un anuncio se notifica si **todas** las
@@ -244,6 +277,7 @@ lo de sus especialidades.
 | `config.json.example` | Copia sin token, para subir a GitHub |
 | `arrancar_oculto.vbs` | Lanzador sin ventana (doble clic o Inicio de Windows) |
 | `.github/workflows/opochecker.yml` | Diagnostico manual (`--verify`); el `schedule` esta desactivado |
+| `monitor/opochecker-check.sh` | Vigilancia del servicio desde el host (uptime-kuma Push) |
 | `data/state.json` | Memoria de documentos ya notificados, por chat (se genera solo) |
 | `data/usuarios.json` | Especialidades, keywords y ajustes de cada usuario |
 | `data/opochecker.log` | Registro de ejecuciones (rota a los 5 MB, 3 copias) |
